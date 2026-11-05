@@ -69,7 +69,7 @@ pub fn runtime_dir() -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn request(request: &Request) -> Result<Response> {
+pub fn send_request(request: &Request) -> Result<Response> {
     let path = runtime_dir()?.join("reind.sock");
     let mut stream = UnixStream::connect(&path)
         .with_context(|| format!("connect to {}; run `rein daemon start`", path.display()))?;
@@ -84,7 +84,7 @@ pub fn request(request: &Request) -> Result<Response> {
 }
 
 pub fn daemon_pid() -> Result<Option<u32>> {
-    match request(&Request::Status) {
+    match send_request(&Request::Status) {
         Ok(Response::Status { pid }) => Ok(Some(pid)),
         Ok(_) => bail!("unexpected daemon status response"),
         Err(error) => {

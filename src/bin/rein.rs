@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use rein::{Request, Response, daemon_pid, request, runtime_dir};
+use rein::{Request, Response, daemon_pid, runtime_dir, send_request};
 
 #[derive(Parser)]
 #[command(version, about = "Manage reind and query bridged agents")]
@@ -68,7 +68,7 @@ fn main() -> Result<()> {
             A2aCommand::Inspect { name } => Request::A2aInspect { name },
         },
     };
-    let response = request(&command)?;
+    let response = send_request(&command)?;
     let output = match response {
         Response::Agents { agents } => serde_json::to_string_pretty(&agents)?,
         Response::Sessions { sessions } => serde_json::to_string_pretty(&sessions)?,
@@ -133,7 +133,7 @@ fn manage_daemon(command: DaemonCommand) -> Result<()> {
                 println!("reind is already stopped");
                 return Ok(());
             }
-            if !matches!(request(&Request::Stop)?, Response::Stopping) {
+            if !matches!(send_request(&Request::Stop)?, Response::Stopping) {
                 bail!("unexpected daemon stop response");
             }
             println!("reind stopped");
