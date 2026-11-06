@@ -18,6 +18,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Ask reind to authenticate with reinhub (framework stage)
+    Login {
+        #[arg(long, default_value = "https://localhost:9011")]
+        hub: String,
+        #[command(subcommand)]
+        command: Option<LoginCommand>,
+    },
+    /// Submit a platform Run through reind
+    Run {
+        agent_id: String,
+        #[arg(long)]
+        session: Option<String>,
+        prompt: String,
+    },
+    /// Query and control platform executions
+    Runs {
+        #[command(subcommand)]
+        command: RunCommand,
+    },
     /// Manage the local reind process
     Daemon {
         #[command(subcommand)]
@@ -37,6 +56,38 @@ enum Commands {
     A2a {
         #[command(subcommand)]
         command: A2aCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LoginCommand {
+    Status,
+}
+
+#[derive(Subcommand)]
+enum RunCommand {
+    Get {
+        run_id: String,
+    },
+    Cancel {
+        run_id: String,
+        #[arg(long)]
+        attempt: String,
+    },
+    Reply {
+        run_id: String,
+        #[arg(long)]
+        attempt: String,
+        #[arg(long)]
+        interaction: String,
+        #[arg(long)]
+        response: serde_json::Value,
+    },
+    Instruct {
+        run_id: String,
+        #[arg(long)]
+        attempt: String,
+        instruction: String,
     },
 }
 
@@ -61,6 +112,47 @@ enum A2aCommand {
 fn main() -> Result<()> {
     let command = match Cli::parse().command {
         Commands::Daemon { command } => return manage_daemon(command),
+        Commands::Login { hub, command: None } => Request::LoginStart { hub_url: hub },
+        Commands::Login {
+            command: Some(LoginCommand::Status),
+            ..
+        } => Request::LoginStatus,
+        Commands::Run {
+            agent_id,
+            session,
+            prompt,
+        } => Request::CreateRun {
+            agent_id,
+            session_id: session,
+            prompt,
+        },
+        Commands::Runs { command } => match command {
+            RunCommand::Get { run_id } => Request::GetRun { run_id },
+            RunCommand::Cancel { run_id, attempt } => Request::CancelRun {
+                run_id,
+                attempt_id: attempt,
+            },
+            RunCommand::Reply {
+                run_id,
+                attempt,
+                interaction,
+                response,
+            } => Request::ReplyInteraction {
+                run_id,
+                attempt_id: attempt,
+                interaction_id: interaction,
+                response,
+            },
+            RunCommand::Instruct {
+                run_id,
+                attempt,
+                instruction,
+            } => Request::SendInstruction {
+                run_id,
+                attempt_id: attempt,
+                instruction,
+            },
+        },
         Commands::Agents { .. } => Request::AgentsList,
         Commands::Sessions { .. } => Request::SessionsList,
         Commands::A2a { command } => match command {

@@ -14,6 +14,10 @@ pub struct State {
     pub agents: Vec<Agent>,
     pub sessions: Vec<Session>,
     pub a2a_services: Vec<A2aService>,
+    // TODO: 在 daemon 后台运行 Hub Client；State 的对外查询不序列化连接凭据。
+    pub hub: Option<crate::hub::HubClient>,
+    pub execution: crate::execution::ExecutionManager,
+    pub store: Option<crate::store::LocalStore>,
 }
 
 impl State {
@@ -40,6 +44,19 @@ impl State {
                 None => Response::Error {
                     message: format!("A2A service '{name}' not found"),
                 },
+            },
+            // TODO: 投递到后台 Hub Client；登录/长执行不能占用 IPC 请求线程。
+            // 只有真实认证完成后才保存凭据并注册 Runtime，IPC 永远不返回凭据。
+            Request::LoginStart { .. } | Request::LoginStatus => Response::Error {
+                message: "Hub login is not implemented (framework stage)".into(),
+            },
+            // TODO: 业务请求转交 reinhub 授权和持久化；只执行 claim 返回的租约。
+            Request::CreateRun { .. }
+            | Request::GetRun { .. }
+            | Request::CancelRun { .. }
+            | Request::ReplyInteraction { .. }
+            | Request::SendInstruction { .. } => Response::Error {
+                message: "Hub run operations are not implemented (framework stage)".into(),
             },
         }
     }

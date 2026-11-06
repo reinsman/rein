@@ -142,3 +142,32 @@ fn command_help_and_required_arguments() {
     assert!(!harness.run(&["a2a", "inspect"]).status.success());
     assert!(!harness.run(&["sessions", "unknown"]).status.success());
 }
+
+#[test]
+fn framework_commands_use_ipc_and_never_report_fake_success() {
+    let harness = Harness::new();
+    harness.ok(&["daemon", "start"]);
+    for args in [
+        vec!["login", "--hub", "https://localhost:9011"],
+        vec!["login", "status"],
+        vec!["run", "agent-1", "hello"],
+        vec!["runs", "get", "run-1"],
+        vec!["runs", "cancel", "run-1", "--attempt", "attempt-1"],
+        vec![
+            "runs",
+            "reply",
+            "run-1",
+            "--attempt",
+            "attempt-1",
+            "--interaction",
+            "interaction-1",
+            "--response",
+            "{\"decision\":\"accept\"}",
+        ],
+    ] {
+        let output = harness.run(&args);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not implemented"));
+    }
+    assert!(harness.ok(&["daemon", "status"]).contains("running"));
+}

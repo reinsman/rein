@@ -1,6 +1,9 @@
 //! Shared local protocol for `rein` and `reind` (Unix only).
 
 pub mod daemon;
+pub mod execution;
+pub mod hub;
+pub mod store;
 
 use std::env;
 use std::fs;
@@ -24,7 +27,36 @@ pub enum Request {
     AgentsList,
     SessionsList,
     A2aList,
-    A2aInspect { name: String },
+    A2aInspect {
+        name: String,
+    },
+    LoginStart {
+        hub_url: String,
+    },
+    LoginStatus,
+    CreateRun {
+        agent_id: String,
+        session_id: Option<String>,
+        prompt: String,
+    },
+    GetRun {
+        run_id: String,
+    },
+    CancelRun {
+        run_id: String,
+        attempt_id: String,
+    },
+    ReplyInteraction {
+        run_id: String,
+        attempt_id: String,
+        interaction_id: String,
+        response: serde_json::Value,
+    },
+    SendInstruction {
+        run_id: String,
+        attempt_id: String,
+        instruction: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
