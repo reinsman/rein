@@ -3,6 +3,7 @@
 pub mod daemon;
 pub mod execution;
 pub mod hub;
+pub mod hub_runtime;
 pub mod store;
 
 use std::env;
@@ -17,6 +18,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 const MAX_MESSAGE_BYTES: u64 = 64 * 1024;
+const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -34,6 +36,30 @@ pub enum Request {
         hub_url: String,
     },
     LoginStatus,
+    RegisterAgent {
+        name: String,
+        configuration: hub_runtime::RegisteredBackend,
+        hub_url: String,
+        ca: Option<PathBuf>,
+        #[serde(default)]
+        insecure_skip_verify: bool,
+    },
+    BringAgentOnline {
+        name: String,
+        provider: String,
+    },
+    TakeAgentOffline {
+        target: String,
+    },
+    StartNativeRun {
+        options: execution::native::NativeRunOptions,
+        session_id: Option<String>,
+        prompt: String,
+    },
+    GetRunEvents {
+        run_id: String,
+        after: u64,
+    },
     CreateRun {
         agent_id: String,
         session_id: Option<String>,
@@ -63,6 +89,8 @@ pub enum Request {
 pub struct Agent {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,13 +109,41 @@ pub struct A2aService {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    Status { pid: u32 },
+    Status {
+        pid: u32,
+    },
     Stopping,
-    Agents { agents: Vec<Agent> },
-    Sessions { sessions: Vec<Session> },
-    A2aServices { services: Vec<A2aService> },
-    A2aService { service: A2aService },
-    Error { message: String },
+    Agents {
+        agents: Vec<Agent>,
+    },
+    Sessions {
+        sessions: Vec<Session>,
+    },
+    A2aServices {
+        services: Vec<A2aService>,
+    },
+    A2aService {
+        service: A2aService,
+    },
+    Run {
+        run: execution::LocalRun,
+    },
+    RunEvents {
+        events: Vec<execution::LocalEvent>,
+    },
+    ControlAccepted {
+        command_id: String,
+    },
+    RegisteredAgent {
+        registration: hub_runtime::Registration,
+    },
+    AgentOffline {
+        agent_id: String,
+        name: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub fn runtime_dir() -> Result<PathBuf> {
@@ -105,10 +161,23 @@ pub fn send_request(request: &Request) -> Result<Response> {
     let path = runtime_dir()?.join("reind.sock");
     let mut stream = UnixStream::connect(&path)
         .with_context(|| format!("connect to {}; run `rein daemon start`", path.display()))?;
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_read_timeout(Some(
+        if matches!(
+            request,
+            Request::RegisterAgent { .. }
+                | Request::BringAgentOnline { .. }
+                | Request::TakeAgentOffline { .. }
+        ) {
+            Duration::from_secs(30)
+        } else if matches!(request, Request::Stop) {
+            Duration::from_secs(20)
+        } else {
+            IO_TIMEOUT
+        },
+    ))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     write_message(&mut stream, request)?;
-    let response = read_message(&stream)?;
+    let response = read_message(&stream, MAX_RESPONSE_BYTES)?;
     if let Response::Error { message } = response {
         bail!("{message}");
     }
@@ -134,13 +203,13 @@ pub fn daemon_pid() -> Result<Option<u32>> {
     }
 }
 
-fn read_message<T: DeserializeOwned>(stream: &UnixStream) -> Result<T> {
+fn read_message<T: DeserializeOwned>(stream: &UnixStream, limit: u64) -> Result<T> {
     use std::io::Read;
 
     let mut bytes = Vec::new();
-    BufReader::new(stream.take(MAX_MESSAGE_BYTES + 1)).read_until(b'\n', &mut bytes)?;
-    if bytes.len() as u64 > MAX_MESSAGE_BYTES {
-        bail!("message exceeds {MAX_MESSAGE_BYTES} bytes");
+    BufReader::new(stream.take(limit + 1)).read_until(b'\n', &mut bytes)?;
+    if bytes.len() as u64 > limit {
+        bail!("message exceeds {limit} bytes");
     }
     if bytes.last() != Some(&b'\n') {
         bail!("incomplete message");

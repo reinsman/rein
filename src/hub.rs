@@ -9,10 +9,14 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
+mod tls;
+
 // 不派生 Debug，避免输出 Hub 连接凭据。
+#[derive(Clone)]
 pub struct HubClient {
     channel: Channel,
     credential: Option<String>,
+    login_free: bool,
 }
 
 impl HubClient {
@@ -32,6 +36,7 @@ impl HubClient {
         Ok(Self {
             channel,
             credential: None,
+            login_free: false,
         })
     }
 
@@ -39,7 +44,38 @@ impl HubClient {
         self.credential = Some(credential);
     }
 
+    pub async fn connect_local(
+        url: &str,
+        ca_pem: Option<Vec<u8>>,
+        insecure_skip_verify: bool,
+    ) -> Result<Self> {
+        let parsed = url::Url::parse(url)?;
+        if !matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+            bail!("login-free Hub must be a loopback address");
+        }
+        if parsed.scheme() != "https" {
+            bail!("Hub connection requires https:// even with --insecure-skip-verify");
+        }
+        if insecure_skip_verify && ca_pem.is_some() {
+            bail!("--ca and --insecure-skip-verify are mutually exclusive");
+        }
+        let mut client = if insecure_skip_verify {
+            Self {
+                channel: tls::connect_unverified(url).await?,
+                credential: None,
+                login_free: false,
+            }
+        } else {
+            Self::connect(url, ca_pem).await?
+        };
+        client.login_free = true;
+        Ok(client)
+    }
+
     fn authenticated<T>(&self, message: T) -> Result<tonic::Request<T>> {
+        if self.login_free {
+            return Ok(tonic::Request::new(message));
+        }
         let credential = self
             .credential
             .as_ref()
@@ -90,11 +126,35 @@ impl HubClient {
             .into_inner())
     }
 
+    pub async fn register_agent(
+        &self,
+        message: pb::RegisterAgentRequest,
+    ) -> Result<pb::RegisterAgentResponse> {
+        let mut request = self.authenticated(message)?;
+        request.set_timeout(std::time::Duration::from_secs(10));
+        Ok(RuntimeServiceClient::new(self.channel.clone())
+            .register_agent(request)
+            .await?
+            .into_inner())
+    }
+
     pub async fn claim_runs(&self, message: pb::ClaimRunsRequest) -> Result<pb::ClaimRunsResponse> {
         let mut request = self.authenticated(message)?;
         request.set_timeout(std::time::Duration::from_secs(10));
         Ok(RunServiceClient::new(self.channel.clone())
             .claim_runs(request)
+            .await?
+            .into_inner())
+    }
+
+    pub async fn unregister_agent(
+        &self,
+        message: pb::UnregisterAgentRequest,
+    ) -> Result<pb::UnregisterAgentResponse> {
+        let mut request = self.authenticated(message)?;
+        request.set_timeout(std::time::Duration::from_secs(10));
+        Ok(RuntimeServiceClient::new(self.channel.clone())
+            .unregister_agent(request)
             .await?
             .into_inner())
     }
@@ -160,6 +220,8 @@ impl HubClient {
         // TODO: 后台任务先发送 Hello/恢复检查点；对账成功后才 claim 和执行。
         let request = self.authenticated(ReceiverStream::new(outgoing))?;
         Ok(DaemonServiceClient::new(self.channel.clone())
+            .max_decoding_message_size(16 * 1024 * 1024)
+            .max_encoding_message_size(16 * 1024 * 1024)
             .connect(request)
             .await?
             .into_inner())
@@ -181,5 +243,26 @@ mod tests {
                 .to_string()
                 .contains("requires https://")
         );
+    }
+
+    #[tokio::test]
+    async fn skip_verification_is_explicit_and_keeps_https_and_loopback_boundaries() {
+        for skip in [false, true] {
+            let error = HubClient::connect_local("http://localhost:9011", None, skip)
+                .await
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("https://"));
+        }
+        let error = HubClient::connect_local("https://example.com", None, true)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("loopback"));
+        let error = HubClient::connect_local("https://localhost:9011", Some(vec![]), true)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("mutually exclusive"));
     }
 }
