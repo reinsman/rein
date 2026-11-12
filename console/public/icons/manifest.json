@@ -1,0 +1,272 @@
+{
+  "main-Group": {
+    "src": "/icons/main-Group.svg",
+    "width": "24",
+    "height": "12"
+  },
+  "main-MaterialPlus": {
+    "src": "/icons/main-MaterialPlus.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialMore": {
+    "src": "/icons/main-MaterialMore.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialDoc": {
+    "src": "/icons/main-MaterialDoc.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MuiCircularProgressActive": {
+    "src": "/icons/main-MuiCircularProgressActive.svg",
+    "width": "12",
+    "height": "12"
+  },
+  "main-MaterialHelp": {
+    "src": "/icons/main-MaterialHelp.svg",
+    "width": "14",
+    "height": "14"
+  },
+  "main-MaterialAt": {
+    "src": "/icons/main-MaterialAt.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialAttach": {
+    "src": "/icons/main-MaterialAttach.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialSend": {
+    "src": "/icons/main-MaterialSend.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialLayers": {
+    "src": "/icons/main-MaterialLayers.svg",
+    "width": "20",
+    "height": "20"
+  },
+  "main-MaterialDown": {
+    "src": "/icons/main-MaterialDown.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-Group1": {
+    "src": "/icons/main-Group1.svg",
+    "width": "13.3333",
+    "height": "10.6667"
+  },
+  "main-MaterialSearch": {
+    "src": "/icons/main-MaterialSearch.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialChat": {
+    "src": "/icons/main-MaterialChat.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-Group2": {
+    "src": "/icons/main-Group2.svg",
+    "width": "16",
+    "height": "8"
+  },
+  "main-Group3": {
+    "src": "/icons/main-Group3.svg",
+    "width": "14.6667",
+    "height": "14.6667"
+  },
+  "main-StatusDot": {
+    "src": "/icons/main-StatusDot.svg",
+    "width": "7",
+    "height": "7"
+  },
+  "main-StatusDot1": {
+    "src": "/icons/main-StatusDot1.svg",
+    "width": "7",
+    "height": "7"
+  },
+  "main-StatusDot2": {
+    "src": "/icons/main-StatusDot2.svg",
+    "width": "7",
+    "height": "7"
+  },
+  "main-StatusDot3": {
+    "src": "/icons/main-StatusDot3.svg",
+    "width": "6",
+    "height": "6"
+  },
+  "main-StatusDot4": {
+    "src": "/icons/main-StatusDot4.svg",
+    "width": "6",
+    "height": "6"
+  },
+  "main-Group4": {
+    "src": "/icons/main-Group4.svg",
+    "width": "16.6667",
+    "height": "15"
+  },
+  "main-MaterialFlow": {
+    "src": "/icons/main-MaterialFlow.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialFilter": {
+    "src": "/icons/main-MaterialFilter.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "main-MaterialClock": {
+    "src": "/icons/main-MaterialClock.svg",
+    "width": "12",
+    "height": "12"
+  },
+  "main-MuiCircularProgressActive1": {
+    "src": "/icons/main-MuiCircularProgressActive1.svg",
+    "width": "12",
+    "height": "12"
+  },
+  "main-MaterialHelp1": {
+    "src": "/icons/main-MaterialHelp1.svg",
+    "width": "12",
+    "height": "12"
+  },
+  "main-MaterialCheck": {
+    "src": "/icons/main-MaterialCheck.svg",
+    "width": "12",
+    "height": "12"
+  },
+  "main-MaterialDrag": {
+    "src": "/icons/main-MaterialDrag.svg",
+    "width": "14",
+    "height": "14"
+  },
+  "detail-MaterialDoc1": {
+    "src": "/icons/detail-MaterialDoc1.svg",
+    "width": "20",
+    "height": "20"
+  },
+  "detail-MaterialExpand": {
+    "src": "/icons/detail-MaterialExpand.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "detail-MaterialClose": {
+    "src": "/icons/detail-MaterialClose.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "detail-MuiCircularProgressActive2": {
+    "src": "/icons/detail-MuiCircularProgressActive2.svg",
+    "width": "13",
+    "height": "13"
+  },
+  "detail-MaterialDown1": {
+    "src": "/icons/detail-MaterialDown1.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "detail-MaterialKeyboard": {
+    "src": "/icons/detail-MaterialKeyboard.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "detail-MaterialInfo": {
+    "src": "/icons/detail-MaterialInfo.svg",
+    "width": "13",
+    "height": "13"
+  },
+  "detail-MaterialStop": {
+    "src": "/icons/detail-MaterialStop.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "detail-MaterialOpen": {
+    "src": "/icons/detail-MaterialOpen.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "account-MaterialPerson": {
+    "src": "/icons/account-MaterialPerson.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "account-MaterialSettings": {
+    "src": "/icons/account-MaterialSettings.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "account-MaterialHelp2": {
+    "src": "/icons/account-MaterialHelp2.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "account-MaterialLogout": {
+    "src": "/icons/account-MaterialLogout.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "account-Group5": {
+    "src": "/icons/account-Group5.svg",
+    "width": "12",
+    "height": "12"
+  },
+  "login-MaterialLayers": {
+    "src": "/icons/login-MaterialLayers.svg",
+    "width": "22",
+    "height": "22"
+  },
+  "login-MaterialEye": {
+    "src": "/icons/login-MaterialEye.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "login-MaterialCode": {
+    "src": "/icons/login-MaterialCode.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "login-MaterialLock": {
+    "src": "/icons/login-MaterialLock.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "settings-MaterialCheck": {
+    "src": "/icons/settings-MaterialCheck.svg",
+    "width": "14",
+    "height": "14"
+  },
+  "settings-MaterialTune": {
+    "src": "/icons/settings-MaterialTune.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "settings-MaterialComputer": {
+    "src": "/icons/settings-MaterialComputer.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "settings-MaterialNotify": {
+    "src": "/icons/settings-MaterialNotify.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "settings-MaterialShield": {
+    "src": "/icons/settings-MaterialShield.svg",
+    "width": "16",
+    "height": "16"
+  },
+  "switch-MuiSwitchSmallOff": {
+    "src": "/icons/switch-MuiSwitchSmallOff.svg",
+    "width": "28",
+    "height": "16"
+  },
+  "switch-MuiSwitchSmallOn": {
+    "src": "/icons/switch-MuiSwitchSmallOn.svg",
+    "width": "28",
+    "height": "16"
+  }
+}

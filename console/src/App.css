@@ -1,0 +1,2636 @@
+:root {
+  font-family: Inter, 'Noto Sans SC', sans-serif;
+  color: #202632;
+  background: #fff;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --border: #e5e8ef;
+  --secondary: #7a8190;
+  --primary: #0866ff;
+  --muted: #f3f4f6;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  color: inherit;
+}
+button:disabled {
+  cursor: default;
+}
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+h1,
+h2 {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 500;
+}
+h3 {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+}
+small {
+  font-size: 11px;
+  line-height: 16px;
+}
+strong {
+  font-weight: 500;
+}
+::selection {
+  background: #cde0ff;
+}
+input,
+textarea {
+  caret-color: var(--primary);
+}
+:focus-visible {
+  outline: 2px solid #0866ff;
+  outline-offset: 2px;
+}
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d7dce5;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  vertical-align: middle;
+}
+.icon img {
+  display: block;
+  max-width: none;
+  flex: none;
+}
+.spacer {
+  flex: 1;
+  min-width: 0;
+}
+.muted {
+  color: var(--secondary);
+  font-size: 12px;
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.app-shell {
+  display: flex;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 21px;
+}
+.main-workspace {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+.split-layout {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 296px;
+  flex: none;
+  height: 100%;
+  padding: 16px;
+  background: #f7f8fa;
+  border-right: 1px solid var(--border);
+  gap: 8px;
+}
+.workspace-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  height: 36px;
+  flex: none;
+}
+.workspace-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  background: none;
+  padding: 0;
+  text-align: left;
+  font-size: 13px;
+}
+.workspace-select > span:nth-child(2) {
+  flex: 1;
+}
+.sidebar-scroll {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: 8px;
+}
+.sidebar-search {
+  flex: none;
+  height: 32px;
+  background: #f3f4f6;
+  gap: 6px;
+}
+.sidebar-search input {
+  padding-left: 0 !important;
+}
+.shortcut {
+  white-space: nowrap;
+  font-size: 11px;
+  color: #a1a7b3;
+}
+.navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  min-height: 0;
+  flex: 1;
+}
+.navigation > .MuiListItemButton-root,
+.navigation > .nav-divider {
+  flex: none;
+}
+.project-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 64px;
+  flex: 1;
+}
+.project-section > .nav-label {
+  flex: none;
+}
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.project-list > * {
+  flex: none;
+}
+.navigation .nav-divider {
+  margin: 16px 0 8px;
+}
+.nav-label {
+  font-size: 11px;
+  color: var(--secondary);
+  height: 22px;
+  padding-top: 3px;
+}
+.project-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.project-tree .tree-child {
+  padding-left: 32px;
+}
+.project-tree .tree-status {
+  padding-left: 56px;
+}
+.status-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  margin-bottom: 16px;
+}
+.count {
+  margin-left: auto;
+  color: var(--secondary);
+  font-size: 11px;
+  min-width: 20px;
+}
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: #7a8190;
+}
+.status-dot.running {
+  background: #0866ff;
+}
+.status-dot.done {
+  background: #08a56d;
+}
+.agent-roster {
+  flex: none;
+  min-height: 0;
+  max-height: min(40vh, 244px);
+  overflow-y: auto;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.roster-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: none;
+  background: #f7f8fa;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.presence {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7a8190;
+  margin-right: -2px;
+}
+.presence.online {
+  background: #08a56d;
+}
+.account-footer {
+  margin-top: auto;
+  flex: none;
+}
+.account-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 44px;
+  background: none;
+  border: 0;
+  padding: 8px 0 0;
+  text-align: left;
+  font-size: 13px;
+}
+.account-button > span:nth-child(2) {
+  flex: 1;
+}
+.search-empty {
+  font-size: 12px;
+  color: var(--secondary);
+  padding: 16px 8px;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 65px;
+  min-height: 65px;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-header h2 {
+  white-space: nowrap;
+}
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: white;
+}
+.chat-heading {
+  flex: 1;
+  min-width: 0;
+}
+.chat-heading h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-heading > span {
+  display: block;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--secondary);
+}
+.header-members {
+  display: flex;
+  gap: 8px;
+}
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.message {
+  display: flex;
+  gap: 8px;
+  flex: none;
+  min-height: 70px;
+}
+.message > .MuiAvatar-root {
+  margin-top: 0;
+}
+.message-content {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+.message-author {
+  height: 18px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+}
+.message-author strong {
+  min-width: 100px;
+}
+.message-author time {
+  font-size: 11px;
+  color: var(--secondary);
+}
+.message-bubble-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+.message-bubble {
+  border-radius: 8px !important;
+  background: #f3f4f6 !important;
+  max-width: 470px;
+  width: 100%;
+  padding: 9px 12px;
+  min-height: 42px;
+  font-size: 13px;
+  line-height: 21px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.message-bubble.with-execution {
+  max-width: 520px;
+}
+.message-bubble > span:first-child {
+  flex: 1;
+}
+.message-state {
+  display: flex;
+  align-items: center;
+  flex: none;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+}
+.message-state.waiting {
+  color: #f59b00;
+}
+.own .message-content {
+  align-items: flex-end;
+}
+.own .message-author {
+  color: var(--secondary);
+  font-size: 11px;
+  margin-right: 52px;
+}
+.own .message-bubble-row {
+  justify-content: flex-end;
+}
+.own .message-bubble {
+  width: fit-content;
+  max-width: 478px;
+  background: #eaf2ff !important;
+  align-items: flex-start;
+}
+.message.with-tasks {
+  min-height: 190px;
+}
+.message-task-table {
+  width: min(460px, 100%);
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+.assignment-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  width: 100%;
+  padding: 0 12px;
+  background: white;
+  border: 0;
+  text-align: left;
+}
+.assignment-row + .assignment-row {
+  border-top: 1px solid var(--border);
+}
+.assignment-row > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.assignment-row small {
+  color: var(--secondary);
+  width: 130px;
+  font-size: 11px;
+  flex: none;
+}
+.assignment-row:hover {
+  background: #f7f9fc;
+}
+.empty-message {
+  color: var(--secondary);
+  margin: auto;
+  text-align: center;
+  font-size: 12px;
+}
+.empty-message p {
+  color: #202632;
+  margin: 8px 0;
+}
+.composer-dock {
+  height: 112px;
+  flex: none;
+  padding: 0 20px 16px;
+}
+.composer {
+  height: 96px;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px !important;
+  padding: 10px 12px;
+  overflow: auto;
+}
+.composer > .MuiInputBase-root {
+  flex: 1;
+  font-size: 13px;
+  line-height: 21px;
+  align-items: flex-start;
+  padding: 0;
+}
+.composer textarea {
+  padding: 0 !important;
+}
+.composer textarea::placeholder {
+  color: var(--secondary);
+  opacity: 1;
+}
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.composer-actions .MuiButton-outlined {
+  font-size: 11px;
+  line-height: 16px;
+  padding: 3px 6px;
+  min-height: 28px;
+}
+.send-button {
+  width: 40px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+}
+.send-button.Mui-disabled {
+  background: #0866ff !important;
+  opacity: 0.8;
+}
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--primary);
+  font-size: 11px;
+}
+.split-divider {
+  position: relative;
+  background: var(--border);
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 3;
+  outline-offset: 3px;
+}
+.split-divider:before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  width: 11px;
+  top: 0;
+  height: 100%;
+}
+.split-handle {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 36px;
+  border-radius: 6px;
+  left: -5px;
+  top: 38.2%;
+  background: #f3f4f6;
+}
+.split-divider:hover,
+.split-divider:focus-visible,
+.is-resizing .split-divider {
+  background: #0866ff;
+}
+.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.task-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  container-type: inline-size;
+  container-name: tasks;
+}
+.task-panel > .panel-header {
+  gap: 8px;
+}
+.task-panel > .panel-header h2 {
+  margin-left: 0;
+}
+.task-panel > .panel-header .MuiButton-root {
+  white-space: nowrap;
+}
+.task-board-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.task-groups {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  min-height: 100%;
+  padding: 16px;
+}
+.task-group {
+  background: #fff;
+  border-radius: 0;
+  min-width: 0;
+  padding: 0 4px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  height: 38px;
+  padding: 0 4px 0 6px;
+  flex: none;
+}
+.group-header h3 {
+  white-space: nowrap;
+}
+.group-header small {
+  color: var(--secondary);
+  margin-left: 8px;
+}
+.group-header .MuiIconButton-root {
+  width: 24px;
+  height: 24px;
+}
+.group-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.task-card {
+  border-radius: 8px !important;
+  padding: 10px;
+  min-width: 0;
+  min-height: 132px;
+}
+.task-card.selected {
+  border-color: #0866ff !important;
+  box-shadow: 0 0 0 1px #0866ff33;
+}
+.task-card:hover {
+  border-color: #a9b8d2;
+}
+.task-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 16px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--secondary);
+  margin-bottom: 6px;
+}
+.task-card-meta .MuiIconButton-root {
+  margin-right: -4px;
+}
+.task-card-main {
+  display: flex !important;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start !important;
+  text-align: left !important;
+  width: 100%;
+  border-radius: 3px !important;
+}
+.task-card-main strong {
+  font-size: 13px;
+  line-height: 20px;
+  min-height: 20px;
+  overflow-wrap: anywhere;
+}
+.task-assignee {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 24px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--secondary);
+}
+.task-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  min-height: 20px;
+  color: var(--secondary);
+}
+.task-state.executing {
+  color: #0866ff;
+}
+.task-state.waiting {
+  color: #f59b00;
+}
+.group-empty {
+  text-align: center;
+  color: var(--secondary);
+  font-size: 11px;
+  padding: 20px 0;
+}
+.active-action {
+  background: #eaf2ff !important;
+}
+.compact-toolbar {
+  height: 45px;
+  min-height: 45px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  background: #f7f8fa;
+}
+.compact-account {
+  border: 0;
+  background: none;
+  padding: 2px;
+}
+.mobile-view-switch {
+  display: flex;
+  gap: 4px;
+}
+.task-detail {
+  position: relative;
+  container: detail / inline-size;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-size: 13px;
+  line-height: 21px;
+}
+.detail-header small {
+  color: var(--secondary);
+  min-width: 55px;
+  font-size: 12px;
+}
+.detail-header h2 {
+  min-width: 0;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-participants {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  min-height: 42px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--secondary);
+}
+.detail-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 96px;
+  color: #0866ff;
+}
+.detail-status.waiting {
+  color: #f59b00;
+}
+.detail-status.completed {
+  color: #08a56d;
+}
+.detail-participants > .MuiAvatar-root:not(:first-of-type) {
+  margin-left: 28px;
+}
+.detail-description {
+  min-height: 52px;
+  padding: 6px 20px 8px;
+  font-size: 13px;
+  line-height: 21px;
+  flex: none;
+}
+.detail-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 0 20px;
+  min-height: 43px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.detail-tabs .MuiTabs-root {
+  flex: none;
+}
+.detail-tabs > .MuiButton-root {
+  white-space: nowrap;
+}
+.detail-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  width: 12px;
+  z-index: 4;
+  cursor: col-resize;
+  touch-action: none;
+}
+.detail-resize-handle .split-handle {
+  left: 0;
+}
+.detail-resize-handle:hover,
+.detail-resize-handle:focus-visible {
+  background: #0866ff18;
+}
+@container detail (max-width: 480px) {
+  .detail-tabs {
+    flex-wrap: wrap;
+    padding: 0 12px 8px;
+    gap: 6px;
+  }
+  .detail-tabs > .MuiTabs-root {
+    flex: 0 0 100%;
+  }
+  .detail-tabs > .spacer {
+    display: none;
+  }
+  .detail-tabs > .MuiButton-root {
+    margin-left: auto;
+  }
+}
+.agent-select {
+  width: 76px;
+  height: 28px;
+  min-height: 28px !important;
+}
+.agent-select .MuiSelect-select {
+  padding: 3px 24px 3px 8px !important;
+}
+.detail-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 16px 20px;
+  overflow: auto;
+}
+.terminal {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  border-radius: 6px;
+  background: #0d1117;
+  color: #cdd5df;
+  padding: 16px;
+  font-family: 'JetBrains Mono', 'Noto Sans SC', monospace;
+  font-size: var(--terminal-size, 12px);
+  line-height: 21px;
+}
+.terminal-scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+.terminal-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 18px;
+  font-family: Inter, 'Noto Sans SC', sans-serif;
+  font-size: 12px;
+}
+.terminal-lines {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.terminal-lines .green {
+  color: #3fb950;
+}
+.terminal-lines .cyan {
+  color: #81d4da;
+}
+.terminal-lines .muted {
+  color: #a0a9b6;
+}
+.terminal-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid #30363d;
+  padding-top: 8px;
+  margin-top: 12px;
+}
+.terminal-input .MuiInputBase-root {
+  color: #cdd5df;
+  font-family: inherit;
+  font-size: 12px;
+  flex: 1;
+}
+.terminal-input .MuiButton-root {
+  color: #81d4da;
+}
+.detail-footer {
+  padding: 10px 20px;
+  min-height: 78px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: none;
+}
+.readonly-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--secondary);
+}
+.detail-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.detail-controls .MuiButton-root {
+  padding: 3px 0;
+  color: #202632;
+}
+.simulation-label {
+  color: #7a8190;
+}
+.activity-list {
+  width: 100%;
+  padding: 0;
+}
+.activity-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-height: 48px;
+  border-bottom: 1px solid var(--border);
+}
+.activity-row time {
+  color: var(--secondary);
+  font-size: 11px;
+}
+.activity-dot {
+  width: 6px;
+  height: 6px;
+  background: #0866ff;
+  border-radius: 50%;
+  flex: none;
+}
+.activity-list > .muted {
+  margin-top: 20px;
+}
+.result-panel {
+  margin: auto;
+  text-align: center;
+  max-width: 360px;
+  padding: 24px;
+}
+.result-panel h3 {
+  margin: 12px 0;
+}
+.result-panel p {
+  color: var(--secondary);
+  line-height: 22px;
+  margin-bottom: 20px;
+}
+.session-record {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+  font-size: 12px;
+}
+.session-record small {
+  display: block;
+  color: var(--secondary);
+  margin: 4px 0 12px;
+}
+.session-record p {
+  margin: 6px 0;
+}
+.dialog-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px !important;
+  padding: 20px 24px !important;
+}
+.settings-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 61px;
+  flex: none;
+  font-size: 15px !important;
+  padding: 0 24px !important;
+  border-bottom: 1px solid var(--border);
+}
+.settings-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.settings-nav {
+  width: 196px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 12px;
+}
+.settings-nav .MuiListItemButton-root {
+  flex: none;
+  font-size: 12px;
+  min-height: 36px;
+  padding: 8px 10px;
+}
+.settings-nav .Mui-selected {
+  background: #f3f4f6 !important;
+}
+.settings-nav > small {
+  color: var(--secondary);
+  white-space: nowrap;
+}
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  padding: 24px 28px 20px;
+  overflow: auto;
+}
+.settings-content h2 {
+  font-size: 15px;
+  line-height: 22px;
+}
+.settings-description {
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 18px;
+  margin-top: 6px;
+  margin-bottom: 16px;
+}
+.settings-fields {
+  flex: none;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 77px;
+  border-bottom: 1px solid var(--border);
+}
+.setting-row > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.setting-row label {
+  font-size: 13px;
+  line-height: 21px;
+}
+.setting-row p {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--secondary);
+  margin-top: 4px;
+}
+.setting-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: none;
+  min-width: 0;
+}
+.setting-select {
+  width: 252px;
+  height: 32px;
+  min-height: 32px !important;
+}
+.setting-control .MuiNativeSelect-select {
+  padding: 6px 10px;
+}
+.setting-switch {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 8px !important;
+}
+.setting-switch img {
+  display: block;
+}
+.settings-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--secondary);
+  margin-top: auto;
+  padding-top: 24px;
+  min-height: 48px;
+}
+.connection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 252px;
+}
+.connected {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: #08a56d;
+}
+.connected .status-dot {
+  width: 6px;
+  height: 6px;
+}
+.connection-form,
+.profile-form,
+.create-task-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 8px 0 12px;
+}
+.connection-form .MuiInputLabel-root,
+.profile-form .MuiInputLabel-root,
+.create-task-form .MuiInputLabel-root {
+  font-size: 13px;
+}
+.connection-form .MuiInputBase-root,
+.profile-form .MuiInputBase-root,
+.create-task-form .MuiInputBase-root {
+  height: 36px;
+}
+.logout-dialog .MuiDialogTitle-root {
+  font-size: 15px;
+  padding: 24px 24px 10px;
+  font-weight: 500;
+  line-height: 22px;
+}
+.logout-dialog .MuiDialogContent-root {
+  padding: 0 24px;
+}
+.logout-dialog p {
+  font-size: 13px;
+  line-height: 21px;
+  color: var(--secondary);
+}
+.logout-dialog .MuiDialogActions-root {
+  padding: 16px 24px 20px;
+  gap: 8px;
+}
+.logout-dialog .MuiButton-root {
+  height: 32px;
+  padding: 5px 20px;
+}
+.placeholder-state {
+  text-align: center;
+  padding: 24px 20px 32px;
+}
+.placeholder-state h3 {
+  font-size: 15px;
+  margin: 12px 0;
+}
+.placeholder-state p {
+  font-size: 13px;
+  color: var(--secondary);
+  line-height: 24px;
+  margin: 0 auto 24px;
+  max-width: 400px;
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.member-row > span:last-child {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--secondary);
+}
+.help-content {
+  font-size: 13px;
+  line-height: 24px;
+  padding-bottom: 12px;
+}
+.help-content p {
+  margin: 12px 0;
+}
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100dvh;
+  font-size: 13px;
+}
+.login-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  position: relative;
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  position: absolute;
+  left: 28px;
+  top: 27px;
+}
+.login-form {
+  width: 360px;
+  max-width: calc(100vw - 40px);
+  margin: 160px auto 60px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login-form h1 {
+  font-size: 20px;
+  line-height: 30px;
+  text-align: center;
+}
+.login-description {
+  text-align: center;
+  font-size: 13px;
+  line-height: 21px;
+  color: var(--secondary);
+  margin-bottom: 22px;
+}
+.login-fields {
+  display: grid;
+  gap: 6px;
+}
+.login-fields label {
+  font-size: 12px;
+  line-height: 18px;
+}
+.login-fields label:not(:first-child) {
+  margin-top: 8px;
+}
+.login-fields .MuiInputBase-root {
+  height: 36px;
+}
+.login-fields .MuiInputAdornment-root {
+  margin-left: 0;
+}
+.login-fields .MuiOutlinedInput-root {
+  padding-right: 8px;
+}
+.login-form > .MuiButton-root {
+  height: 36px;
+  min-height: 36px;
+}
+.login-form > .forgot-password {
+  align-self: flex-end;
+  min-height: 20px;
+  height: 20px;
+  padding: 0;
+}
+.login-divider {
+  font-size: 11px !important;
+  line-height: 20px !important;
+  color: var(--secondary);
+}
+.register-text {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 18px;
+  gap: 4px;
+}
+.register-text .MuiButton-root {
+  padding: 0;
+  color: var(--secondary);
+  min-height: 18px;
+}
+.login-demo-note {
+  text-align: center;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--secondary);
+}
+.login-legal {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: auto;
+  margin-bottom: 34px;
+  color: var(--secondary);
+  font-size: 11px;
+}
+.login-legal button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--secondary);
+  font-size: 11px;
+}
+.login-error {
+  font-size: 12px !important;
+}
+.font-standard .message-bubble,
+.font-standard .assignment-row,
+.font-standard .navigation {
+  font-size: 14px;
+}
+@container tasks (max-width:560px) {
+  .task-groups {
+    grid-template-columns: 1fr;
+    grid-auto-rows: max-content;
+    align-content: start;
+  }
+  .task-group {
+    min-height: 130px;
+  }
+  .group-cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex-shrink: 0;
+  }
+  .group-header {
+    padding-right: 6px;
+  }
+  .group-header small {
+    margin-left: 0;
+  }
+  .task-card {
+    min-height: 132px;
+  }
+}
+@container tasks (max-width:390px) {
+  .group-cards {
+    grid-template-columns: 1fr;
+  }
+}
+@media (min-width: 900px) and (max-width: 1400px) {
+  .header-members {
+    gap: 4px;
+  }
+  .chat-header {
+    padding-left: 16px;
+    gap: 6px;
+  }
+  .chat-header .header-members .MuiAvatar-root {
+    width: 20px;
+    height: 20px;
+    font-size: 11px;
+  }
+  .messages {
+    padding: 16px;
+  }
+  .composer-dock {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .assignment-row small {
+    width: auto;
+    max-width: 100px;
+  }
+  .detail-participants {
+    gap: 6px;
+  }
+}
+@media (max-width: 899px) {
+  .split-layout {
+    display: flex;
+  }
+  .split-divider {
+    display: none;
+  }
+  .split-layout > .chat-panel,
+  .split-layout > .task-panel {
+    flex: 1;
+    width: 100%;
+  }
+  .mobile-show-chat > .task-panel,
+  .mobile-show-tasks > .chat-panel {
+    display: none;
+  }
+  .panel-header {
+    height: 60px;
+    min-height: 60px;
+    padding-left: 16px;
+    padding-right: 12px;
+  }
+  .messages {
+    padding: 20px 16px;
+    gap: 18px;
+  }
+  .message-bubble {
+    width: auto;
+    max-width: 100%;
+  }
+  .message-bubble.with-execution {
+    width: 100%;
+  }
+  .message-content {
+    max-width: 100%;
+  }
+  .assignment-row small {
+    width: auto;
+    max-width: 100px;
+  }
+  .message.with-tasks {
+    min-height: 190px;
+  }
+  .composer-dock {
+    height: auto;
+    padding: 8px 12px 12px;
+  }
+  .composer {
+    height: 100px;
+  }
+  .detail-description {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .detail-tabs {
+    padding-left: 12px;
+    padding-right: 12px;
+    gap: 6px;
+  }
+  .detail-body {
+    padding: 12px;
+  }
+  .detail-header small {
+    min-width: 40px;
+  }
+  .detail-header h2 {
+    font-size: 13px;
+  }
+  .detail-participants {
+    padding: 8px 16px;
+    gap: 6px;
+  }
+  .detail-participants > .MuiAvatar-root:not(:first-of-type) {
+    margin-left: 8px;
+  }
+  .detail-tabs .MuiTab-root {
+    min-width: 44px;
+    width: 44px;
+  }
+  .detail-tabs .MuiButton-root {
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+  .detail-tabs .MuiButton-startIcon {
+    display: none;
+  }
+  .agent-select {
+    width: 72px;
+  }
+  .detail-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .settings-body {
+    flex-direction: column;
+  }
+  .settings-nav {
+    width: 100%;
+    padding: 8px;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-nav .MuiListItemButton-root {
+    white-space: nowrap;
+    min-width: max-content;
+    min-height: 36px;
+    gap: 6px;
+  }
+  .settings-nav > small,
+  .settings-nav > .spacer {
+    display: none;
+  }
+  .settings-content {
+    padding: 20px 16px;
+  }
+  .setting-select {
+    width: 180px;
+  }
+  .connection-actions {
+    min-width: 180px;
+  }
+  .setting-row {
+    gap: 12px;
+  }
+  .settings-status {
+    padding-top: 24px;
+  }
+  .login-form {
+    margin-top: 140px;
+  }
+  .member-row {
+    flex-wrap: wrap;
+  }
+  .task-groups {
+    padding: 12px;
+  }
+  .group-header {
+    height: 38px;
+  }
+}
+@media (max-width: 480px) {
+  .header-members {
+    gap: 4px;
+  }
+  .chat-header {
+    gap: 6px;
+  }
+  .chat-header .header-members .MuiAvatar-root {
+    width: 18px;
+    height: 18px;
+    font-size: 10px;
+  }
+  .chat-header > .MuiIconButton-root:last-child {
+    display: none;
+  }
+  .message-author {
+    font-size: 12px;
+    gap: 12px;
+  }
+  .message-author strong {
+    min-width: 92px;
+  }
+  .message-bubble {
+    font-size: 13px;
+  }
+  .message-bubble.with-execution {
+    flex-wrap: wrap;
+  }
+  .message-state.waiting {
+    margin-left: auto;
+  }
+  .assignment-row {
+    padding: 0 8px;
+    font-size: 12px;
+    gap: 6px;
+  }
+  .assignment-row small {
+    font-size: 10px;
+    max-width: 90px;
+  }
+  .setting-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 0;
+  }
+  .setting-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .setting-select {
+    width: 100%;
+  }
+  .connection-actions {
+    width: 100%;
+  }
+  .detail-participants {
+    font-size: 11px;
+  }
+  .detail-status {
+    min-width: 78px;
+  }
+  .detail-header {
+    gap: 6px;
+  }
+  .detail-header h2 {
+    max-width: 180px;
+  }
+  .detail-header small {
+    min-width: auto;
+  }
+  .simulation-label {
+    display: none;
+  }
+  .login-form {
+    margin-top: 120px;
+  }
+  .login-legal {
+    margin-bottom: 24px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .spin {
+    animation: none;
+  }
+}
+.logout-icon {
+  position: relative;
+}
+.logout-glyph {
+  position: absolute;
+  inset: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Project navigation and the persistent collapsed rail share the compact MUI scale. */
+.navigation {
+  gap: 4px;
+}
+.nav-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  flex: none;
+}
+.nav-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.quiet-action {
+  opacity: 0.5;
+}
+.quiet-action:hover,
+.quiet-action:focus-visible {
+  opacity: 1;
+}
+.project-tree {
+  gap: 4px;
+}
+.project-row,
+.requirement-row {
+  position: relative;
+  min-width: 0;
+}
+.project-toggle {
+  width: 100%;
+  padding-right: 36px !important;
+}
+.tree-chevron {
+  display: flex;
+  transform: rotate(-90deg);
+  opacity: 0.65;
+}
+.tree-chevron.expanded {
+  transform: none;
+}
+.project-edit,
+.requirement-edit,
+.agent-settings-action {
+  position: absolute !important;
+  right: 3px;
+  top: 3px;
+}
+.project-edit,
+.requirement-edit,
+.agent-settings-action {
+  opacity: 0;
+}
+.project-row:hover .project-edit,
+.project-row:focus-within .project-edit,
+.requirement-row:hover .requirement-edit,
+.requirement-row:focus-within .requirement-edit,
+.agent-roster-row:hover .agent-settings-action,
+.agent-roster-row:focus-within .agent-settings-action {
+  opacity: 0.6;
+}
+.project-row .project-edit:focus-visible,
+.requirement-row .requirement-edit:focus-visible,
+.agent-roster-row .agent-settings-action:focus-visible {
+  opacity: 1;
+}
+.project-children {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.requirement-row .tree-child {
+  width: 100%;
+  padding-right: 36px;
+}
+.requirements-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 3px 0 32px;
+  color: var(--secondary);
+  font-size: 11px;
+}
+.show-more-projects {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: none;
+  text-align: left;
+  min-height: 32px;
+  padding: 4px 8px 4px 32px;
+  color: var(--secondary);
+  font-size: 12px;
+}
+.show-more-projects:hover {
+  background: #eef0f4;
+  border-radius: 6px;
+}
+.sidebar-rail {
+  width: 56px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  height: 100dvh;
+  padding: 16px 0;
+  border-right: 1px solid var(--border);
+  background: #f7f8fa;
+}
+.sidebar-rail > .MuiIconButton-root {
+  width: 32px;
+  height: 32px;
+}
+.sidebar-rail nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sidebar-rail nav .MuiIconButton-root {
+  width: 36px;
+  height: 36px;
+}
+.sidebar-rail .rail-active {
+  background: #eaf2ff;
+}
+.rail-account {
+  margin-top: auto;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+}
+.rail-account:hover {
+  background: #eaf2ff;
+}
+.entity-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12px !important;
+}
+.entity-dialog .MuiDialog-paper {
+  max-width: 440px;
+}
+.entity-dialog form {
+  min-height: 380px;
+  display: flex;
+  flex-direction: column;
+}
+.entity-dialog .dialog-title {
+  min-height: 64px;
+}
+.entity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.entity-field label {
+  font-size: 12px;
+  line-height: 16px;
+}
+.entity-field .MuiOutlinedInput-root {
+  min-height: 36px;
+}
+.entity-field .MuiInputBase-multiline {
+  min-height: 88px;
+  padding: 10px;
+  align-items: flex-start;
+}
+.entity-field textarea.MuiInputBase-input {
+  padding: 0;
+  line-height: 21px;
+}
+.entity-actions {
+  padding: 12px 24px 20px !important;
+  gap: 8px;
+}
+.entity-actions .MuiButton-root {
+  min-width: 72px;
+  min-height: 32px;
+}
+.memory-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #fff;
+}
+.memory-planning {
+  font-size: 11px;
+  color: var(--secondary);
+}
+.memory-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 28px 24px 20px;
+}
+.memory-intro {
+  align-self: stretch;
+}
+.memory-intro p {
+  font-size: 11px;
+  color: var(--secondary);
+  margin-top: 4px;
+}
+.memory-graph {
+  width: 100%;
+  max-width: 520px;
+  flex: 0 0 auto;
+  margin: auto 0;
+}
+.memory-placeholder-note {
+  margin-top: 16px;
+  color: var(--secondary);
+  text-align: center;
+  font-size: 11px;
+  line-height: 18px;
+}
+@media (max-width: 899px) {
+  .split-layout > .memory-panel {
+    flex: 1;
+    width: 100%;
+  }
+  .mobile-show-chat > .memory-panel {
+    display: none;
+  }
+  .memory-body {
+    padding: 20px 16px;
+  }
+  .memory-graph text {
+    font-size: 17px;
+  }
+  .chat-header .header-members {
+    display: none;
+  }
+  .chat-header > .MuiIconButton-root {
+    flex: none;
+  }
+}
+@media (hover: none) {
+  .project-edit,
+  .requirement-edit,
+  .agent-settings-action {
+    opacity: 0.5;
+  }
+}
+.workspace-header {
+  height: 32px;
+}
+.sidebar-scroll {
+  padding-top: 4px;
+}
+.navigation {
+  padding-top: 4px;
+}
+.navigation .nav-divider {
+  margin: 8px 0 12px;
+}
+.agent-roster {
+  margin-top: 4px;
+}
+.account-button {
+  height: 40px;
+  padding-top: 4px;
+}
+.sidebar-rail > .MuiIconButton-root {
+  width: 36px;
+  height: 36px;
+}
+.sidebar-rail nav {
+  gap: 16px;
+}
+.agent-roster-row {
+  position: relative;
+  min-width: 0;
+}
+.agent-roster-row > .MuiListItemButton-root {
+  width: 100%;
+  padding-right: 36px;
+}
+.agent-config-dialog .setting-control {
+  width: 252px;
+  max-width: 100%;
+}
+.agent-config-error {
+  margin-bottom: 8px;
+}
+.settings-status > .MuiButton-root {
+  margin-left: auto;
+  flex: none;
+}
+.header-member {
+  border-radius: 50%;
+  flex: none;
+}
+.header-member:hover {
+  background: #eaf2ff;
+}
+.author-mention {
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  border-radius: 3px;
+}
+.author-mention:hover {
+  color: var(--primary);
+}
+.task-group-todo {
+  background: var(--task-todo);
+}
+.task-group-running {
+  background: var(--task-running);
+}
+.task-group-done {
+  background: var(--task-done);
+}
+.task-card.waiting-task,
+.message-bubble.waiting-message {
+  background: var(--waiting-bg) !important;
+  border: 1px solid var(--waiting-border);
+}
+.task-card.waiting-task.selected {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.needs-reply-badge {
+  color: var(--waiting-text);
+  background: var(--waiting-badge);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.task-card-meta .needs-reply-badge {
+  margin-right: 4px;
+}
+.waiting-task .task-state.waiting {
+  color: var(--waiting-text);
+  font-weight: 500;
+}
+.message-bubble .message-state.waiting {
+  background: var(--waiting-badge);
+  color: var(--waiting-text);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.message-state.waiting:hover {
+  box-shadow: inset 0 0 0 1px var(--waiting-border);
+}
+@media (max-width: 560px) {
+  .agent-config-dialog .setting-control {
+    width: 100%;
+  }
+}
+
+.task-dependencies {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
+.task-dependencies .dependency-path {
+  fill: none;
+  stroke: var(--secondary);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  stroke-linejoin: round;
+}
+.task-dependency-label {
+  margin-left: auto;
+  margin-right: 4px;
+  font-size: 10px;
+  color: var(--secondary);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.activity-list {
+  width: 100%;
+  min-width: 0;
+}
+.spec-activity {
+  width: 100%;
+}
+.spec-progress {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.spec-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.spec-summary h3 {
+  font-size: 13px;
+  font-weight: 500;
+}
+.spec-summary > span {
+  font-size: 12px;
+  color: var(--secondary);
+}
+.spec-progress .MuiLinearProgress-root {
+  height: 4px;
+  border-radius: 4px;
+  background: #f3f4f6;
+}
+.spec-phase {
+  padding: 8px 0 6px;
+  border-bottom: 1px solid var(--border);
+}
+.spec-phase:last-child {
+  border: 0;
+  padding-bottom: 0;
+}
+.spec-phase summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  min-height: 22px;
+}
+.spec-phase summary::-webkit-details-marker {
+  display: none;
+}
+.spec-phase summary > .spec-chevron {
+  transition: transform 120ms;
+  flex: none;
+}
+.spec-phase:not([open]) summary > .spec-chevron {
+  transform: rotate(-90deg);
+}
+.spec-phase summary strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.spec-phase summary > span {
+  color: var(--secondary);
+  font-size: 12px;
+}
+.spec-phase summary > small {
+  margin-left: auto;
+  color: #0866ff;
+  background: #eaf2ff;
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.spec-phase ul {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.spec-phase li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.spec-step-state {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.spec-step-tick {
+  position: absolute;
+  left: 3.5px;
+  top: 12px;
+}
+.spec-phase li > div {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.spec-phase li small {
+  display: block;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--secondary);
+}
+.spec-phase li.completed > div > span {
+  color: var(--secondary);
+}
+.spec-empty {
+  color: var(--secondary);
+  padding: 16px 0;
+}
+.detail-dependencies {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+}
+.detail-dependencies > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.detail-dependencies span {
+  color: var(--secondary);
+  white-space: nowrap;
+}
+.detail-dependencies button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: #0866ff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.activity-log-heading {
+  font-size: 12px;
+  font-weight: 500;
+  margin: 20px 0 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .spec-phase summary > .spec-chevron {
+    transition: none;
+  }
+}
+
+.task-group + .task-group {
+  border-left: 1px solid #eceef2;
+}
+.task-card {
+  background: #fcfcfd !important;
+}
+.task-card.selected {
+  background: #fff !important;
+}
+.task-card[draggable='true'] {
+  cursor: grab;
+}
+.task-card[draggable='true']:active {
+  cursor: grabbing;
+}
+.task-card.is-dragging {
+  opacity: 0.45;
+}
+.task-card.drop-before {
+  position: relative;
+}
+.task-card.drop-before::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  border-top: 2px solid var(--primary);
+}
+.task-group.drop-active .group-header {
+  background: #eaf2ff;
+  border-radius: 6px;
+}
+.task-group.drop-active:not(:has(.drop-before)) .group-cards::after {
+  content: '';
+  border-top: 2px solid var(--primary);
+  margin-top: 4px;
+}
+.spec-phase li.completed > div > span {
+  color: var(--text);
+}
+@container tasks (max-width: 560px) {
+  .task-group + .task-group {
+    border-left: 0;
+    border-top: 1px solid #eceef2;
+    padding-top: 8px;
+  }
+}
+.task-results {
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 21px;
+}
+.result-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.result-heading h3 {
+  font-size: 14px;
+  font-weight: 500;
+}
+.result-heading p,
+.result-demo-note {
+  color: var(--secondary);
+  font-size: 11px;
+}
+.result-complete-badge {
+  flex: none;
+  color: #078c5a;
+  background: #edf7f1;
+  border-radius: 12px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.result-summary {
+  padding: 0 10px 16px;
+}
+.result-summary-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.result-summary-title h3 {
+  font-size: 14px;
+  font-weight: 500;
+}
+.result-success,
+.result-test-pass {
+  color: #08a56d;
+}
+.result-summary > p + p {
+  margin-top: 6px;
+}
+.result-section {
+  border-bottom: 1px solid var(--border);
+}
+.result-section:last-child {
+  border-bottom: 0;
+}
+.result-section summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  list-style: none;
+  padding: 16px 10px;
+  cursor: pointer;
+}
+.result-section summary::-webkit-details-marker {
+  display: none;
+}
+.result-section summary > svg {
+  color: #656b75;
+  flex: none;
+}
+.result-section summary > div {
+  flex: 1;
+  min-width: 0;
+}
+.result-section summary strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+}
+.result-section summary small {
+  display: block;
+  font-size: 11px;
+  color: var(--secondary);
+}
+.result-section[open] .result-chevron {
+  transform: rotate(90deg);
+}
+.result-section-body {
+  padding: 0 10px 16px;
+}
+.result-section-body > p {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+.result-section-body > .MuiButton-root {
+  border-radius: 20px;
+  margin-top: 4px;
+}
+.result-code-row,
+.result-pr-link,
+.result-test-pass {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.result-code-row svg,
+.result-pr-link svg {
+  flex: none;
+  color: #656b75;
+}
+.result-pr-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  margin: 12px 0;
+  cursor: pointer;
+}
+.result-pr-link:hover {
+  color: var(--primary);
+}
+.result-document h3 {
+  font-size: 14px;
+  margin: 20px 0 8px;
+}
+.result-document p {
+  margin-bottom: 10px;
+  line-height: 22px;
+}
+.result-pending {
+  margin: auto;
+  text-align: center;
+  max-width: 360px;
+  padding: 24px;
+}
+.result-pending p {
+  color: var(--secondary);
+  margin: 12px 0 20px;
+}
+
+/* Hub 执行沿用现有紧凑聊天布局。 */
+.hub-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border-bottom: 1px solid #e5e8ef;
+  color: #596273;
+}
+.hub-session-bar select {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #e5e8ef;
+  border-radius: 6px;
+  background: #fff;
+  color: #202632;
+  font: inherit;
+}
+.hub-alert {
+  margin: 8px 16px 0;
+}
+.hub-run-status {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: #596273;
+  font-size: 12px;
+}
+.hub-state-label,
+.hub-placeholder,
+.hub-connection-note {
+  color: #596273;
+  font-size: 12px;
+}
+.hub-tool,
+.hub-reasoning,
+.hub-run-reference {
+  margin-top: 8px;
+  max-width: 100%;
+  width: 100%;
+  min-width: 0;
+  color: #596273;
+}
+.hub-activity-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  list-style: none;
+  line-height: 20px;
+}
+.hub-activity-summary::-webkit-details-marker {
+  display: none;
+}
+.hub-activity-summary:hover {
+  color: #202632;
+}
+.hub-activity-label,
+.hub-activity-chevron {
+  flex: none;
+}
+.hub-activity-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hub-activity-chevron {
+  display: inline-flex;
+  transform: rotate(-90deg);
+}
+[open] > .hub-activity-summary .hub-activity-chevron {
+  transform: none;
+}
+.hub-activity-content {
+  padding: 6px 0 8px 20px;
+  font-size: 12px;
+  line-height: 21px;
+}
+.hub-tool-error .hub-activity-label {
+  color: #db2e32;
+}
+.hub-tool summary,
+.hub-reasoning summary,
+.hub-run-reference summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.hub-tool pre,
+.hub-run-reference dd {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+.hub-reasoning p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #596273;
+}
+.hub-progress,
+.hub-final-answer {
+  width: 100%;
+  min-width: 0;
+}
+.hub-progress {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+.hub-progress > summary,
+.hub-duration {
+  color: #596273;
+  font-size: 12px;
+}
+.hub-progress-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 0 12px;
+}
+.hub-message-text {
+  width: 100%;
+  min-width: 0;
+  color: #202632;
+  font-size: 13px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.hub-message-text p + p {
+  margin-top: 10px;
+}
+.hub-message-text pre {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 12px;
+  background: var(--muted);
+  border-radius: 6px;
+}
+.hub-message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  color: #596273;
+}
+.agent-message:hover .hub-message-actions,
+.agent-message:focus-within .hub-message-actions,
+.hub-message-actions.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: none) {
+  .hub-message-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+.hub-run-reference {
+  width: min(420px, calc(100vw - 32px));
+  padding: 16px;
+  margin: 0;
+  color: #596273;
+}
+.hub-run-reference dl {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 6px;
+}
+.hub-run-reference dd {
+  margin: 0;
+}
+.hub-interaction {
+  margin-top: 10px;
+  padding: 12px;
+  background: #fff9eb !important;
+  border-color: #b88627 !important;
+}
+.hub-interaction h3 {
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0 0 8px;
+}
+.hub-interaction form {
+  display: grid;
+  gap: 12px;
+}
+.hub-interaction-actions {
+  display: flex;
+  gap: 8px;
+}
+.hub-interaction select {
+  width: 100%;
+  font: inherit;
+  padding: 6px;
+}
+.hub-roster-error,
+.hub-roster-empty {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #596273;
+  overflow-wrap: anywhere;
+}
+.hub-roster-error {
+  color: #b3261e;
+}
+.hub-roster-error button {
+  display: block;
+  margin-top: 6px;
+  border: 0;
+  color: #0866ff;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+@media (max-width: 599px) {
+  .hub-session-bar {
+    padding-inline: 12px;
+  }
+  .hub-interaction .MuiInputBase-input {
+    font-size: 16px;
+  }
+}
+
+.project-directory-heading,
+.project-directory-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.project-directory-heading {
+  justify-content: space-between;
+}
+.project-directory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.project-directory-row > .MuiFormControl-root {
+  min-width: 0;
+  flex: 1;
+}
+.project-directory-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--secondary);
+}

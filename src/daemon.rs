@@ -5,203 +5,49 @@ use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rein_proto::hub::v1 as pb;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use uuid::Uuid;
 
 use anyhow::{Context, Result, bail};
 
-use crate::{
-    A2aService, Agent, IO_TIMEOUT, MAX_MESSAGE_BYTES, MAX_RESPONSE_BYTES, Request, Response,
-    Session,
-};
+use crate::{IO_TIMEOUT, MAX_MESSAGE_BYTES, MAX_RESPONSE_BYTES, Request, Response};
 
-/// The registry is intentionally empty until real agent adapters populate it.
-#[derive(Default)]
 pub struct State {
-    pub agents: Vec<Agent>,
-    pub sessions: Vec<Session>,
-    pub a2a_services: Vec<A2aService>,
-    // TODO: 在 daemon 后台运行 Hub Client；State 的对外查询不序列化连接凭据。
-    pub hub: Option<crate::hub::HubClient>,
-    pub execution: crate::execution::ExecutionManager,
-    pub store: Option<crate::store::LocalStore>,
-    pub hub_runtime: Option<crate::hub_runtime::HubRuntime>,
+    pub local: crate::local::LocalRuntime,
+    pub console_url: String,
 }
-
 impl State {
     async fn respond(&self, request: Request) -> Response {
-        match request {
-            Request::Status => Response::Status {
-                pid: std::process::id(),
-            },
-            Request::Stop => Response::Stopping,
-            Request::AgentsList => {
-                let mut agents = self.agents.clone();
-                if let Some(hub) = &self.hub_runtime {
-                    match hub.agents().await {
-                        Ok(configured) => agents.extend(configured),
-                        Err(error) => {
-                            return Response::Error {
-                                message: error.to_string(),
-                            };
-                        }
-                    }
-                }
-                Response::Agents { agents }
-            }
-            Request::RegisterAgent {
-                name,
-                configuration,
-                hub_url,
-                ca,
-                insecure_skip_verify,
-            } => {
-                let Some(hub) = &self.hub_runtime else {
-                    return Response::Error {
-                        message: "Hub runtime unavailable".into(),
-                    };
-                };
-                match hub
-                    .register(name, configuration, hub_url, ca, insecure_skip_verify)
-                    .await
-                {
-                    Ok(registration) => Response::RegisteredAgent { registration },
-                    Err(error) => Response::Error {
-                        message: format!("{error:#}"),
-                    },
-                }
-            }
-            Request::BringAgentOnline { name, provider } => {
-                let Some(hub) = &self.hub_runtime else {
-                    return Response::Error {
-                        message: "Hub runtime unavailable".into(),
-                    };
-                };
-                match hub.bring_online(name, provider).await {
-                    Ok(registration) => Response::RegisteredAgent { registration },
-                    Err(error) => Response::Error {
-                        message: format!("{error:#}"),
-                    },
-                }
-            }
-            Request::TakeAgentOffline { target } => {
-                let Some(hub) = &self.hub_runtime else {
-                    return Response::Error {
-                        message: "Hub runtime unavailable".into(),
-                    };
-                };
-                match hub.take_offline(target).await {
-                    Ok((agent_id, name)) => Response::AgentOffline { agent_id, name },
-                    Err(error) => Response::Error {
-                        message: format!("{error:#}"),
-                    },
-                }
-            }
-            Request::SessionsList => Response::Sessions {
-                sessions: self
-                    .sessions
-                    .iter()
-                    .cloned()
-                    .chain(self.execution.sessions())
-                    .collect(),
-            },
-            Request::A2aList => Response::A2aServices {
-                services: self.a2a_services.clone(),
-            },
-            Request::A2aInspect { name } => match self.a2a_services.iter().find(|s| s.name == name)
-            {
-                Some(service) => Response::A2aService {
-                    service: service.clone(),
+        let result: Result<Response> = async {
+            Ok(match request {
+                Request::Status => Response::Status {
+                    pid: std::process::id(),
+                    console_url: self.console_url.clone(),
                 },
-                None => Response::Error {
-                    message: format!("A2A service '{name}' not found"),
+                Request::Stop => Response::Stopping,
+                Request::AgentsList => Response::LocalAgents {
+                    agents: self.local.agents.list()?,
                 },
-            },
-            // TODO: 投递到后台 Hub Client；登录/长执行不能占用 IPC 请求线程。
-            // 只有真实认证完成后才保存凭据并注册 Runtime，IPC 永远不返回凭据。
-            Request::LoginStart { .. } | Request::LoginStatus => Response::Error {
-                message: "Hub login is not implemented (framework stage)".into(),
-            },
-            Request::StartNativeRun {
-                options,
-                session_id,
-                prompt,
-            } => match self.execution.start_native(options, session_id, prompt) {
-                Ok(run) => Response::Run { run },
-                Err(error) => Response::Error {
-                    message: format!("{error:#}"),
+                Request::InspectAgent { name } => Response::LocalAgent {
+                    agent: self.local.agents.get(&name)?,
                 },
-            },
-            Request::GetRunEvents { run_id, after } => {
-                match self.execution.events(&run_id, after) {
-                    Ok(events) => Response::RunEvents { events },
-                    Err(error) => Response::Error {
-                        message: error.to_string(),
-                    },
+                Request::AddAgent { config } => Response::LocalAgent {
+                    agent: self.local.add_agent(config).await?,
+                },
+                Request::SetAgentEnabled { name, enabled } => Response::LocalAgent {
+                    agent: self.local.set_enabled(&name, enabled).await?,
+                },
+                Request::RemoveAgent { name } => {
+                    self.local.remove_agent(&name).await?;
+                    Response::AgentRemoved { name }
                 }
-            }
-            Request::GetRun { run_id } if run_id.starts_with("local-") => {
-                match self.execution.get(&run_id) {
-                    Some(run) => Response::Run { run },
-                    None => Response::Error {
-                        message: "local run not found".into(),
-                    },
-                }
-            }
-            Request::CancelRun { run_id, attempt_id } if run_id.starts_with("local-") => self
-                .control(
-                    run_id,
-                    attempt_id,
-                    pb::control_command::Payload::Cancel(pb::CancelCommand {
-                        reason: "local CLI".into(),
-                    }),
-                ),
-            Request::ReplyInteraction {
-                run_id,
-                attempt_id,
-                interaction_id,
-                response,
-            } if run_id.starts_with("local-") => self.control(
-                run_id,
-                attempt_id,
-                pb::control_command::Payload::InteractionReply(pb::InteractionReplyCommand {
-                    interaction_id,
-                    response_json: serde_json::to_vec(&response).unwrap(),
-                }),
-            ),
-            // 平台 Run 仍须经 Hub 授权和持久化；不能隐式变成本地任务。
-            Request::CreateRun { .. }
-            | Request::GetRun { .. }
-            | Request::CancelRun { .. }
-            | Request::ReplyInteraction { .. }
-            | Request::SendInstruction { .. } => Response::Error {
-                message: "Hub run operations are not implemented (framework stage)".into(),
-            },
+            })
         }
-    }
-
-    fn control(
-        &self,
-        run_id: String,
-        attempt_id: String,
-        payload: pb::control_command::Payload,
-    ) -> Response {
-        let command = pb::ControlCommand {
-            command_id: Uuid::new_v4().to_string(),
-            attempt: Some(pb::AttemptRef { run_id, attempt_id }),
-            payload: Some(payload),
-        };
-        match self.execution.command(command) {
-            Ok(ack) => Response::ControlAccepted {
-                command_id: ack.command_id,
-            },
-            Err(error) => Response::Error {
-                message: format!("{error:#}"),
-            },
-        }
+        .await;
+        result.unwrap_or_else(|e| Response::Error {
+            message: format!("{e:#}"),
+        })
     }
 }
 
@@ -247,21 +93,27 @@ async fn serve(path: PathBuf, lock: std::fs::File) -> Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     let socket = SocketGuard(path);
     let store = crate::store::LocalStore::open(crate::runtime_dir()?.join("reind.sqlite")).await?;
-    let execution = crate::execution::ExecutionManager::default();
-    let hub_runtime = crate::hub_runtime::HubRuntime::new(store.clone(), execution.clone()).await?;
-    hub_runtime.start().await;
+    let local = crate::local::LocalRuntime::new(crate::runtime_dir()?, store).await?;
+    let http = tokio::net::TcpListener::bind(crate::web::listen_address()?).await?;
+    let console_url = format!("http://{}", http.local_addr()?);
     let state = Arc::new(State {
-        execution,
-        store: Some(store),
-        hub_runtime: Some(hub_runtime),
-        ..State::default()
+        local,
+        console_url: console_url.clone(),
+    });
+    let http_stop = tokio_util::sync::CancellationToken::new();
+    let stop_signal = http_stop.clone();
+    let router = crate::web::router(state.local.clone(), console_url.clone(), http_stop.clone());
+    let web = tokio::spawn(async move {
+        axum::serve(http, router)
+            .with_graceful_shutdown(stop_signal.cancelled_owned())
+            .await
     });
     let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
     let clients = Arc::new(tokio::sync::Semaphore::new(64));
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     eprintln!(
-        "reind: daemon started pid={} socket={}",
+        "reind: daemon started pid={} socket={} console={console_url}",
         std::process::id(),
         socket.0.display()
     );
@@ -287,12 +139,11 @@ async fn serve(path: PathBuf, lock: std::fs::File) -> Result<()> {
     };
     eprintln!("reind: daemon stopping; cleaning up active executions");
     drop(listener);
-    drop(socket);
-    if let Some(hub) = &state.hub_runtime {
-        hub.shutdown().await;
-    }
-    state.execution.shutdown().await;
+    http_stop.cancel();
+    state.local.shutdown().await;
+    web.await??;
     drop(lock);
+    drop(socket);
     eprintln!("reind: daemon stopped");
     if let Some(mut stream) = stop_stream {
         write_response(&mut stream, &Response::Stopping).await?;
@@ -340,33 +191,4 @@ async fn write_response(stream: &mut UnixStream, response: &Response) -> Result<
     }
     tokio::time::timeout(Duration::from_secs(2), stream.write_all(&bytes)).await??;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn inspect_reads_the_registry_and_reports_missing_services() {
-        let state = State {
-            a2a_services: vec![A2aService {
-                name: "coder".into(),
-                agent_id: "agent-1".into(),
-                url: "http://127.0.0.1:9000".into(),
-            }],
-            ..State::default()
-        };
-        assert!(matches!(
-            state.respond(Request::A2aInspect { name: "coder".into() }).await,
-            Response::A2aService { service } if service.agent_id == "agent-1"
-        ));
-        assert!(matches!(
-            state
-                .respond(Request::A2aInspect {
-                    name: "missing".into()
-                })
-                .await,
-            Response::Error { .. }
-        ));
-    }
 }

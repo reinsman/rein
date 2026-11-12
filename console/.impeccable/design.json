@@ -1,0 +1,441 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-15T23:48:43.740704+00:00",
+  "title": "Design System: Rein",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Action blue",
+        "tonalRamp": [
+          "oklch(15.00% 0.24022 261.15)",
+          "oklch(26.43% 0.24022 261.15)",
+          "oklch(37.86% 0.24022 261.15)",
+          "oklch(49.29% 0.24022 261.15)",
+          "oklch(60.71% 0.24022 261.15)",
+          "oklch(72.14% 0.24022 261.15)",
+          "oklch(83.57% 0.24022 261.15)",
+          "oklch(95.00% 0.24022 261.15)"
+        ]
+      },
+      "success": {
+        "role": "secondary",
+        "displayName": "Completion green",
+        "tonalRamp": [
+          "oklch(15.00% 0.14245 160.17)",
+          "oklch(26.43% 0.14245 160.17)",
+          "oklch(37.86% 0.14245 160.17)",
+          "oklch(49.29% 0.14245 160.17)",
+          "oklch(60.71% 0.14245 160.17)",
+          "oklch(72.14% 0.14245 160.17)",
+          "oklch(83.57% 0.14245 160.17)",
+          "oklch(95.00% 0.14245 160.17)"
+        ]
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Waiting amber",
+        "tonalRamp": [
+          "oklch(15.00% 0.16649 68.88)",
+          "oklch(26.43% 0.16649 68.88)",
+          "oklch(37.86% 0.16649 68.88)",
+          "oklch(49.29% 0.16649 68.88)",
+          "oklch(60.71% 0.16649 68.88)",
+          "oklch(72.14% 0.16649 68.88)",
+          "oklch(83.57% 0.16649 68.88)",
+          "oklch(95.00% 0.16649 68.88)"
+        ]
+      },
+      "error": {
+        "role": "secondary",
+        "displayName": "Destructive red",
+        "tonalRamp": [
+          "oklch(15.00% 0.20799 25.66)",
+          "oklch(26.43% 0.20799 25.66)",
+          "oklch(37.86% 0.20799 25.66)",
+          "oklch(49.29% 0.20799 25.66)",
+          "oklch(60.71% 0.20799 25.66)",
+          "oklch(72.14% 0.20799 25.66)",
+          "oklch(83.57% 0.20799 25.66)",
+          "oklch(95.00% 0.20799 25.66)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Primary ink",
+        "tonalRamp": [
+          "oklch(15.00% 0.02410 264.04)",
+          "oklch(26.43% 0.02410 264.04)",
+          "oklch(37.86% 0.02410 264.04)",
+          "oklch(49.29% 0.02410 264.04)",
+          "oklch(60.71% 0.02410 264.04)",
+          "oklch(72.14% 0.02410 264.04)",
+          "oklch(83.57% 0.02410 264.04)",
+          "oklch(95.00% 0.02410 264.04)"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Secondary gray",
+        "tonalRamp": [
+          "oklch(15.00% 0.02425 265.65)",
+          "oklch(26.43% 0.02425 265.65)",
+          "oklch(37.86% 0.02425 265.65)",
+          "oklch(49.29% 0.02425 265.65)",
+          "oklch(60.71% 0.02425 265.65)",
+          "oklch(72.14% 0.02425 265.65)",
+          "oklch(83.57% 0.02425 265.65)",
+          "oklch(95.00% 0.02425 265.65)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "White surface",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 0.00)",
+          "oklch(26.43% 0.00000 0.00)",
+          "oklch(37.86% 0.00000 0.00)",
+          "oklch(49.29% 0.00000 0.00)",
+          "oklch(60.71% 0.00000 0.00)",
+          "oklch(72.14% 0.00000 0.00)",
+          "oklch(83.57% 0.00000 0.00)",
+          "oklch(95.00% 0.00000 0.00)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar gray",
+        "tonalRamp": [
+          "oklch(15.00% 0.00287 264.54)",
+          "oklch(26.43% 0.00287 264.54)",
+          "oklch(37.86% 0.00287 264.54)",
+          "oklch(49.29% 0.00287 264.54)",
+          "oklch(60.71% 0.00287 264.54)",
+          "oklch(72.14% 0.00287 264.54)",
+          "oklch(83.57% 0.00287 264.54)",
+          "oklch(95.00% 0.00287 264.54)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted gray",
+        "tonalRamp": [
+          "oklch(15.00% 0.00287 264.54)",
+          "oklch(26.43% 0.00287 264.54)",
+          "oklch(37.86% 0.00287 264.54)",
+          "oklch(49.29% 0.00287 264.54)",
+          "oklch(60.71% 0.00287 264.54)",
+          "oklch(72.14% 0.00287 264.54)",
+          "oklch(83.57% 0.00287 264.54)",
+          "oklch(95.00% 0.00287 264.54)"
+        ]
+      },
+      "task-group": {
+        "role": "neutral",
+        "displayName": "Task group gray",
+        "tonalRamp": [
+          "oklch(15.00% 0.00287 264.54)",
+          "oklch(26.43% 0.00287 264.54)",
+          "oklch(37.86% 0.00287 264.54)",
+          "oklch(49.29% 0.00287 264.54)",
+          "oklch(60.71% 0.00287 264.54)",
+          "oklch(72.14% 0.00287 264.54)",
+          "oklch(83.57% 0.00287 264.54)",
+          "oklch(95.00% 0.00287 264.54)"
+        ]
+      },
+      "selected": {
+        "role": "primary",
+        "displayName": "Selected pale blue",
+        "tonalRamp": [
+          "oklch(15.00% 0.01946 260.17)",
+          "oklch(26.43% 0.01946 260.17)",
+          "oklch(37.86% 0.01946 260.17)",
+          "oklch(49.29% 0.01946 260.17)",
+          "oklch(60.71% 0.01946 260.17)",
+          "oklch(72.14% 0.01946 260.17)",
+          "oklch(83.57% 0.01946 260.17)",
+          "oklch(95.00% 0.01946 260.17)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Divider gray",
+        "tonalRamp": [
+          "oklch(15.00% 0.00998 267.36)",
+          "oklch(26.43% 0.00998 267.36)",
+          "oklch(37.86% 0.00998 267.36)",
+          "oklch(49.29% 0.00998 267.36)",
+          "oklch(60.71% 0.00998 267.36)",
+          "oklch(72.14% 0.00998 267.36)",
+          "oklch(83.57% 0.00998 267.36)",
+          "oklch(95.00% 0.00998 267.36)"
+        ]
+      },
+      "terminal-bg": {
+        "role": "neutral",
+        "displayName": "Terminal dark",
+        "tonalRamp": [
+          "oklch(15.00% 0.01402 258.36)",
+          "oklch(26.43% 0.01402 258.36)",
+          "oklch(37.86% 0.01402 258.36)",
+          "oklch(49.29% 0.01402 258.36)",
+          "oklch(60.71% 0.01402 258.36)",
+          "oklch(72.14% 0.01402 258.36)",
+          "oklch(83.57% 0.01402 258.36)",
+          "oklch(95.00% 0.01402 258.36)"
+        ]
+      },
+      "terminal-text": {
+        "role": "neutral",
+        "displayName": "Terminal text",
+        "tonalRamp": [
+          "oklch(15.00% 0.01633 253.91)",
+          "oklch(26.43% 0.01633 253.91)",
+          "oklch(37.86% 0.01633 253.91)",
+          "oklch(49.29% 0.01633 253.91)",
+          "oklch(60.71% 0.01633 253.91)",
+          "oklch(72.14% 0.01633 253.91)",
+          "oklch(83.57% 0.01633 253.91)",
+          "oklch(95.00% 0.01633 253.91)"
+        ]
+      },
+      "terminal-secondary": {
+        "role": "neutral",
+        "displayName": "Terminal secondary",
+        "tonalRamp": [
+          "oklch(15.00% 0.02138 257.49)",
+          "oklch(26.43% 0.02138 257.49)",
+          "oklch(37.86% 0.02138 257.49)",
+          "oklch(49.29% 0.02138 257.49)",
+          "oklch(60.71% 0.02138 257.49)",
+          "oklch(72.14% 0.02138 257.49)",
+          "oklch(83.57% 0.02138 257.49)",
+          "oklch(95.00% 0.02138 257.49)"
+        ]
+      },
+      "terminal-success": {
+        "role": "neutral",
+        "displayName": "Terminal green",
+        "tonalRamp": [
+          "oklch(15.00% 0.18093 145.62)",
+          "oklch(26.43% 0.18093 145.62)",
+          "oklch(37.86% 0.18093 145.62)",
+          "oklch(49.29% 0.18093 145.62)",
+          "oklch(60.71% 0.18093 145.62)",
+          "oklch(72.14% 0.18093 145.62)",
+          "oklch(83.57% 0.18093 145.62)",
+          "oklch(95.00% 0.18093 145.62)"
+        ]
+      },
+      "terminal-cyan": {
+        "role": "neutral",
+        "displayName": "Terminal cyan",
+        "tonalRamp": [
+          "oklch(15.00% 0.08132 201.63)",
+          "oklch(26.43% 0.08132 201.63)",
+          "oklch(37.86% 0.08132 201.63)",
+          "oklch(49.29% 0.08132 201.63)",
+          "oklch(60.71% 0.08132 201.63)",
+          "oklch(72.14% 0.08132 201.63)",
+          "oklch(83.57% 0.08132 201.63)",
+          "oklch(95.00% 0.08132 201.63)"
+        ]
+      },
+      "terminal-border": {
+        "role": "neutral",
+        "displayName": "Terminal divider",
+        "tonalRamp": [
+          "oklch(15.00% 0.01489 252.31)",
+          "oklch(26.43% 0.01489 252.31)",
+          "oklch(37.86% 0.01489 252.31)",
+          "oklch(49.29% 0.01489 252.31)",
+          "oklch(60.71% 0.01489 252.31)",
+          "oklch(72.14% 0.01489 252.31)",
+          "oklch(83.57% 0.01489 252.31)",
+          "oklch(95.00% 0.01489 252.31)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "Panel, detail and settings headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Messages, settings labels and normal application text."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Buttons, inputs, tabs, select values and supporting text."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Timestamps, counts, task IDs and saving status."
+      },
+      "task-title": {
+        "displayName": "Task title",
+        "purpose": "Medium-weight task names and small section headings."
+      },
+      "terminal": {
+        "displayName": "Terminal",
+        "purpose": "Execution output and command input; optional 13px preference."
+      },
+      "login-title": {
+        "displayName": "Login title",
+        "purpose": "Centered login heading."
+      }
+    },
+    "shadows": [
+      {
+        "name": "detail-overlay",
+        "value": "-6px 0 18px #1726401f",
+        "purpose": "Right task detail and dialog paper."
+      },
+      {
+        "name": "account-menu",
+        "value": "0 6px 18px #1726401f",
+        "purpose": "Account menu paper."
+      },
+      {
+        "name": "selected-task",
+        "value": "0 0 0 1px #0866ff33",
+        "purpose": "Task selection halo."
+      }
+    ],
+    "motion": [
+      {
+        "name": "running-indicator",
+        "value": "spin 1s linear infinite",
+        "purpose": "Executing task and message indicators; disabled for reduced motion."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Animation and transition duration ceiling under prefers-reduced-motion: reduce."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "temporary-sidebar-max",
+        "value": "1199px"
+      },
+      {
+        "name": "single-primary-pane-max",
+        "value": "899px"
+      },
+      {
+        "name": "stacked-settings-row-max",
+        "value": "480px"
+      },
+      {
+        "name": "task-container-stacked-groups-max",
+        "value": "560px"
+      },
+      {
+        "name": "task-container-single-card-max",
+        "value": "390px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Compact contained action with MUI primary hover.",
+      "html": "<button class=\"ds-button-primary\">保存</button>",
+      "css": ".ds-button-primary{font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;color:#fff;background:var(--primary,#0866ff);border:0;border-radius:6px;min-height:28px;padding:3px 10px;font-weight:400;cursor:pointer;transition:background-color 250ms cubic-bezier(.4,0,.2,1);}.ds-button-primary:hover{background:rgb(5,71,178);}.ds-button-primary:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}.ds-button-primary:active{background:rgb(5,71,178);}"
+    },
+    {
+      "name": "Outlined button",
+      "kind": "button",
+      "refersTo": "button-outlined",
+      "description": "Compact secondary action with a thin gray outline.",
+      "html": "<button class=\"ds-button-outlined\">任务流</button>",
+      "css": ".ds-button-outlined{font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;color:#202632;background:transparent;border:1px solid var(--border,#e5e8ef);border-radius:6px;min-height:28px;padding:3px 10px;font-weight:400;cursor:pointer;transition:background-color 250ms cubic-bezier(.4,0,.2,1);}.ds-button-outlined:hover{background:rgba(8,102,255,.04);}.ds-button-outlined:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}.ds-button-outlined:active{background:rgba(8,102,255,.08);}"
+    },
+    {
+      "name": "Outlined field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Small outlined field used in forms and settings.",
+      "html": "<input class=\"ds-field\" aria-label=\"连接名称\" placeholder=\"连接名称\" />",
+      "css": ".ds-field{font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;color:#202632;background:#fff;border:1px solid var(--border,#e5e8ef);border-radius:6px;min-height:32px;padding:7px 10px;caret-color:var(--primary,#0866ff);}.ds-field::placeholder{color:var(--secondary,#7a8190);}.ds-field:hover{border-color:#202632;}.ds-field:focus{border:2px solid var(--primary,#0866ff);padding:6px 9px;}.ds-field:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}"
+    },
+    {
+      "name": "Selected navigation row",
+      "kind": "nav",
+      "refersTo": "navigation-selected",
+      "description": "Compact sidebar row with pale blue selection and a native Figma icon.",
+      "html": "<button class=\"ds-navigation\" aria-current=\"page\"><svg preserveAspectRatio=\"none\" overflow=\"visible\" style=\"display: block;\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<g id=\"Material / chat\" clip-path=\"url(#clip0_0_745)\">\n<g id=\"Vector\">\n</g>\n<path id=\"Vector_2\" d=\"M13.3333 1.33333H2.66667C1.93333 1.33333 1.33333 1.93333 1.33333 2.66667V14.6667L4 12H13.3333C14.0667 12 14.6667 11.4 14.6667 10.6667V2.66667C14.6667 1.93333 14.0667 1.33333 13.3333 1.33333ZM13.3333 10.6667H4L2.66667 12V2.66667H13.3333V10.6667Z\" fill=\"#202632\"/>\n</g>\n<defs>\n<clipPath id=\"clip0_0_745\">\n<rect width=\"16\" height=\"16\" fill=\"white\"/>\n</clipPath>\n</defs>\n</svg>\n<span>工作空间群聊</span></button>",
+      "css": ".ds-navigation{font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;font-size:13px;line-height:21px;display:flex;align-items:center;gap:8px;min-height:32px;width:264px;text-align:left;padding:5px 8px;background:#eaf2ff;color:#202632;border:0;border-radius:6px;cursor:pointer;}.ds-navigation:hover{background:rgba(8,102,255,.12);}.ds-navigation:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}.ds-navigation:active{background:rgba(8,102,255,.16);}.ds-navigation svg{flex:none;}"
+    },
+    {
+      "name": "Task card",
+      "kind": "card",
+      "refersTo": "task-card",
+      "description": "White outlined task card with compact metadata and a selectable task action.",
+      "html": "<article class=\"ds-task-card\"><div class=\"ds-task-meta\">#T-24</div><button class=\"ds-task-open\"><strong>实现任务详情</strong><span class=\"ds-task-assignee\">Haibin · 开发</span><span class=\"ds-task-state\">执行中</span></button></article>",
+      "css": ".ds-task-card{font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;width:190px;min-height:132px;padding:10px;background:#fff;color:#202632;border:1px solid var(--border,#e5e8ef);border-radius:8px;}.ds-task-card:hover{border-color:#a9b8d2;}.ds-task-card:focus-within{border-color:var(--primary,#0866ff);box-shadow:0 0 0 1px #0866ff33;}.ds-task-meta{font-size:11px;line-height:16px;color:var(--secondary,#7a8190);margin-bottom:6px;}.ds-task-open{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%;border:0;background:transparent;color:inherit;padding:0;border-radius:3px;cursor:pointer;font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;}.ds-task-open strong{font-size:13px;line-height:20px;font-weight:500;overflow-wrap:anywhere;}.ds-task-open:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}.ds-task-assignee{min-height:24px;color:var(--secondary,#7a8190);}.ds-task-state{color:var(--primary,#0866ff);}"
+    },
+    {
+      "name": "Message bubble",
+      "kind": "custom",
+      "refersTo": "message-bubble",
+      "description": "Gray agent message container with readable wrapping.",
+      "html": "<div class=\"ds-message-bubble\">任务已开始执行，我会在这里同步进度。</div>",
+      "css": ".ds-message-bubble{font-family:Inter,'Noto Sans SC',sans-serif;font-size:13px;line-height:21px;color:#202632;background:var(--muted,#f3f4f6);border-radius:8px;padding:9px 12px;min-height:42px;max-width:470px;white-space:pre-wrap;overflow-wrap:anywhere;}"
+    },
+    {
+      "name": "Terminal",
+      "kind": "custom",
+      "refersTo": "terminal",
+      "description": "Dark execution console with mono output and a command field.",
+      "html": "<section class=\"ds-terminal\"><div class=\"ds-terminal-status\">执行中</div><pre class=\"ds-terminal-output\"><span>✓</span> 工作空间已就绪\n正在执行任务…</pre><input class=\"ds-terminal-command\" aria-label=\"终端命令\" placeholder=\"输入模拟命令\" /></section>",
+      "css": ".ds-terminal{font-family:\"JetBrains Mono\",\"Noto Sans SC\",monospace;font-size:12px;line-height:21px;background:#0d1117;color:#cdd5df;border-radius:6px;padding:16px;}.ds-terminal-status{font-family:Inter,'Noto Sans SC',sans-serif;font-size:12px;line-height:18px;margin-bottom:18px;}.ds-terminal-output{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;}.ds-terminal-output span{color:#3fb950;}.ds-terminal-command{font:inherit;color:#cdd5df;background:transparent;border:0;border-top:1px solid #30363d;margin-top:12px;padding:8px 0 0;width:100%;}.ds-terminal-command::placeholder{color:#a0a9b6;}.ds-terminal-command:hover{border-top-color:#a0a9b6;}.ds-terminal-command:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}"
+    },
+    {
+      "name": "Settings switch",
+      "kind": "custom",
+      "refersTo": "settings-switch",
+      "description": "Native Figma switch artwork inside the implemented square target.",
+      "html": "<button class=\"ds-settings-switch\" role=\"switch\" aria-checked=\"true\" aria-label=\"隔离任务工作目录\"><svg preserveAspectRatio=\"none\" overflow=\"visible\" style=\"display: block;\" width=\"28\" height=\"16\" viewBox=\"0 0 28 16\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n<g id=\"MuiSwitch / Small / On\">\n<rect width=\"28\" height=\"16\" rx=\"8\" fill=\"#0866FF\"/>\n<circle id=\"Ellipse\" cx=\"20\" cy=\"8\" r=\"6\" fill=\"white\"/>\n</g>\n</svg>\n</button>",
+      "css": ".ds-settings-switch{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:8px;background:transparent;cursor:pointer;}.ds-settings-switch:hover{background:rgba(0,0,0,.04);}.ds-settings-switch:focus-visible{outline:2px solid var(--primary,#0866ff);outline-offset:2px;}.ds-settings-switch:active{background:rgba(0,0,0,.08);}.ds-settings-switch svg{display:block;flex:none;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Compact white workspace",
+    "overview": "Rein is a compact application for operating a workspace through scoped group conversations and Agent tasks. White work areas, a pale sidebar, gray task groups and small controls keep conversation, task status and execution output visible together. Typography and spacing serve scanning and frequent interaction.\n\nThe visual authority is [Figma pzrgKXgJAyugcvBNC16Ick](https://www.figma.com/design/pzrgKXgJAyugcvBNC16Ick): main workspace `2:34`, task detail `2:35`, login `12:1111`, settings `12:1112`–`12:1116`, account menu `24:3887` and logout dialog `24:4369`. The implemented source of tokens is `src/theme.ts`; `src/App.css` and the components define layout and component details. Preserve these references when extending the application.",
+    "keyCharacteristics": [
+      "Compact white application surfaces with thin dividers.",
+      "Small Inter and Noto Sans SC typography; JetBrains Mono for terminal output.",
+      "Blue actions and selection, with explicit status text alongside status icons.",
+      "Resizable conversation and task panes, with responsive navigation and task groups.",
+      "Native Figma SVG assets at their intended intrinsic sizes."
+    ],
+    "rules": [
+      {
+        "name": "The Status Meaning Rule",
+        "body": "Keep waiting, execution and completion colors tied to their existing meanings. Accompany status colors with labels or icons.",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "**Do** use the pinned Figma nodes and implemented theme as visual authority for new screens.",
+      "**Do** preserve the compact type hierarchy, white work areas and gray navigation and task-group surfaces.",
+      "**Do** preserve native Figma SVG geometry and existing icon source paths, including the nested logout glyph.",
+      "**Do** keep both desktop panes resizable with their minimum widths and persist the user's ratio.",
+      "**Do** let stacked task groups grow to their content and switch card columns using task-container width.",
+      "**Do** retain visible keyboard focus, labeled controls, status text and reduced-motion behavior."
+    ],
+    "donts": [
+      "**Don't** replace the pinned visual system with a new metaphor, decorative palette or oversized typography.",
+      "**Don't** dim the workspace behind the account menu's invisible dismiss backdrop.",
+      "**Don't** force equal viewport-distributed heights onto the stacked task groups.",
+      "**Don't** stretch native SVG icons or replace them with a different icon family.",
+      "**Don't** turn task detail into a change to the stored conversation/task split."
+    ]
+  }
+}

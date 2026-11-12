@@ -1,10 +1,11 @@
 //! Shared local protocol for `rein` and `reind` (Unix only).
 
+pub mod agents;
 pub mod daemon;
 pub mod execution;
-pub mod hub;
-pub mod hub_runtime;
+pub mod local;
 pub mod store;
+pub mod web;
 
 use std::env;
 use std::fs;
@@ -27,130 +28,29 @@ pub enum Request {
     Status,
     Stop,
     AgentsList,
-    SessionsList,
-    A2aList,
-    A2aInspect {
-        name: String,
-    },
-    LoginStart {
-        hub_url: String,
-    },
-    LoginStatus,
-    RegisterAgent {
-        name: String,
-        configuration: hub_runtime::RegisteredBackend,
-        hub_url: String,
-        ca: Option<PathBuf>,
-        #[serde(default)]
-        insecure_skip_verify: bool,
-    },
-    BringAgentOnline {
-        name: String,
-        provider: String,
-    },
-    TakeAgentOffline {
-        target: String,
-    },
-    StartNativeRun {
-        options: execution::native::NativeRunOptions,
-        session_id: Option<String>,
-        prompt: String,
-    },
-    GetRunEvents {
-        run_id: String,
-        after: u64,
-    },
-    CreateRun {
-        agent_id: String,
-        session_id: Option<String>,
-        prompt: String,
-    },
-    GetRun {
-        run_id: String,
-    },
-    CancelRun {
-        run_id: String,
-        attempt_id: String,
-    },
-    ReplyInteraction {
-        run_id: String,
-        attempt_id: String,
-        interaction_id: String,
-        response: serde_json::Value,
-    },
-    SendInstruction {
-        run_id: String,
-        attempt_id: String,
-        instruction: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Agent {
-    pub id: String,
-    pub name: String,
-    #[serde(default)]
-    pub disabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Session {
-    pub id: String,
-    pub agent_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct A2aService {
-    pub name: String,
-    pub agent_id: String,
-    pub url: String,
+    AddAgent { config: agents::AgentConfig },
+    SetAgentEnabled { name: String, enabled: bool },
+    RemoveAgent { name: String },
+    InspectAgent { name: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    Status {
-        pid: u32,
-    },
+    Status { pid: u32, console_url: String },
     Stopping,
-    Agents {
-        agents: Vec<Agent>,
-    },
-    Sessions {
-        sessions: Vec<Session>,
-    },
-    A2aServices {
-        services: Vec<A2aService>,
-    },
-    A2aService {
-        service: A2aService,
-    },
-    Run {
-        run: execution::LocalRun,
-    },
-    RunEvents {
-        events: Vec<execution::LocalEvent>,
-    },
-    ControlAccepted {
-        command_id: String,
-    },
-    RegisteredAgent {
-        registration: hub_runtime::Registration,
-    },
-    AgentOffline {
-        agent_id: String,
-        name: String,
-    },
-    Error {
-        message: String,
-    },
+    LocalAgents { agents: Vec<agents::AgentConfig> },
+    LocalAgent { agent: agents::AgentConfig },
+    AgentRemoved { name: String },
+    Error { message: String },
 }
 
 pub fn runtime_dir() -> Result<PathBuf> {
-    let path = if let Some(path) = env::var_os("REIN_HOME") {
+    let path = if let Some(path) = env::var_os("REIND_HOME").or_else(|| env::var_os("REIN_HOME")) {
         PathBuf::from(path)
     } else {
-        PathBuf::from(env::var_os("HOME").context("HOME is not set; set REIN_HOME")?).join(".rein")
+        PathBuf::from(env::var_os("HOME").context("HOME is not set; set REIND_HOME")?)
+            .join(".reind")
     };
     fs::create_dir_all(&path).with_context(|| format!("create {}", path.display()))?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
@@ -161,20 +61,11 @@ pub fn send_request(request: &Request) -> Result<Response> {
     let path = runtime_dir()?.join("reind.sock");
     let mut stream = UnixStream::connect(&path)
         .with_context(|| format!("connect to {}; run `rein daemon start`", path.display()))?;
-    stream.set_read_timeout(Some(
-        if matches!(
-            request,
-            Request::RegisterAgent { .. }
-                | Request::BringAgentOnline { .. }
-                | Request::TakeAgentOffline { .. }
-        ) {
-            Duration::from_secs(30)
-        } else if matches!(request, Request::Stop) {
-            Duration::from_secs(20)
-        } else {
-            IO_TIMEOUT
-        },
-    ))?;
+    stream.set_read_timeout(Some(if matches!(request, Request::Stop) {
+        Duration::from_secs(30)
+    } else {
+        IO_TIMEOUT
+    }))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
     write_message(&mut stream, request)?;
     let response = read_message(&stream, MAX_RESPONSE_BYTES)?;
@@ -186,7 +77,7 @@ pub fn send_request(request: &Request) -> Result<Response> {
 
 pub fn daemon_pid() -> Result<Option<u32>> {
     match send_request(&Request::Status) {
-        Ok(Response::Status { pid }) => Ok(Some(pid)),
+        Ok(Response::Status { pid, .. }) => Ok(Some(pid)),
         Ok(_) => bail!("unexpected daemon status response"),
         Err(error) => {
             if error.downcast_ref::<std::io::Error>().is_some_and(|e| {
