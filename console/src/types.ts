@@ -14,7 +14,7 @@ export interface Requirement {
   description?: string
   projectId: string
 }
-import type { AgentConfig } from './localTypes'
+import type { AgentConfig, Task as StoredTask } from './localTypes'
 export interface Agent extends AgentConfig {
   id: string
   name: string
@@ -63,21 +63,12 @@ export interface AgentConfiguration {
     autoSave: boolean
   }
 }
-export type SpecPhaseName = 'Requirements' | 'Design' | 'Planning' | 'Execution' | 'Verification'
-export interface SpecPhase {
-  name: SpecPhaseName
-  steps: { id: string; title: string; owner: string; completed: boolean }[]
-}
-export interface Task {
+export interface Task extends StoredTask {
   displayId?: string
-  id: string
-  title: string
   requirementId: string
   agentId: string
   reviewerId?: string
-  dependsOn?: string[]
-  specPhases?: SpecPhase[]
-  status: TaskStatus
+  dependsOn: string[]
   execution: ExecutionState
   statusText: string
   description: string

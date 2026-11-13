@@ -124,6 +124,8 @@ components:
 
 # Design System: Rein
 
+需求页复用三列 Todo，Spec、Design、Tasks、验证是带前置依赖的任务类型。任务卡显示类型、阶段编号、内容进度和阻塞原因。详情沿用原 rein-console 的右侧浮动 Drawer、拖宽、展开／恢复、外部关闭和焦点返回；按类型显示文档、验收标准、开发子任务或验证证据，工作记录展示真实用户操作。首版不自动执行 Agent。旧普通任务保留，不再生成模拟的完整 SDD 步骤或测试成果。
+
 ## Overview
 
 **Creative North Star: "Compact white workspace"**

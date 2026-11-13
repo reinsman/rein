@@ -16,7 +16,7 @@ import {
   TextField,
   useMediaQuery,
 } from '@mui/material'
-import type { Agent, AppData, ChatScope, Project, Requirement, Task, TaskStatus } from './types'
+import type { Agent, AppData, ChatScope, Project, Requirement, TaskStatus } from './types'
 import { defaultScope, reinService } from './services/reinService'
 import { preferencesService } from './services/preferences'
 import { Sidebar, SidebarRail } from './components/Sidebar'
@@ -31,6 +31,8 @@ import { AgentSettings } from './components/AgentSettings'
 import { Login } from './components/Login'
 import { Action, AgentAvatar, Icon } from './components/shared'
 import { statusLabels } from './constants'
+import type { TaskType } from './localTypes'
+import { taskTypeInfo, taskTypes } from './services/sdd'
 import { statusColors } from './theme'
 import './App.css'
 
@@ -63,6 +65,7 @@ export default function App() {
   const [nameDraft, setNameDraft] = useState('Haibin')
   const [createStatus, setCreateStatus] = useState<TaskStatus | null>(null)
   const [taskTitle, setTaskTitle] = useState('')
+  const [taskType, setTaskType] = useState<TaskType | ''>('')
   const splitRef = useRef<HTMLDivElement>(null)
   const taskOpenerRef = useRef<HTMLElement | null>(null)
   const [lastTaskId, setLastTaskId] = useState('T-24')
@@ -142,14 +145,6 @@ export default function App() {
     const next = Math.max(360, Math.min(rect.width - 1 - 360, clientX - rect.left)) / referenceWidth
     setSplit(next)
     splitValueRef.current = next
-  }
-  async function changeTaskStatus(task: Task, status: TaskStatus) {
-    try {
-      await reinService.updateTask(task.id, { status })
-      setNotice(`任务已移至${statusLabels[status]}`)
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : '任务更新失败')
-    }
   }
   const notify = (text: string) => setNotice(text)
   const snackbar = (
@@ -318,6 +313,7 @@ export default function App() {
               onCreate={(status) => {
                 setCreateStatus(status)
                 setTaskTitle('')
+                setTaskType('')
               }}
               notify={notify}
             />
@@ -339,7 +335,6 @@ export default function App() {
         availableLeft={!compact && sidebarVisible ? 296 : 56}
         onExpand={() => setExpanded((v) => !v)}
         onClose={closeTask}
-        onStatus={changeTaskStatus}
         notify={notify}
       />
       <Menu
@@ -514,6 +509,7 @@ export default function App() {
                       '',
                     taskTitle.trim(),
                     createStatus,
+                    taskType || undefined,
                   )
                   setCreateStatus(null)
                   notify('任务已创建')
@@ -526,6 +522,34 @@ export default function App() {
             <p className="muted">
               {scope.title} · {createStatus && statusLabels[createStatus]}
             </p>
+            <label className="create-task-type">
+              任务类型
+              <select
+                aria-label="任务类型"
+                value={taskType}
+                onChange={(event) => {
+                  const type = event.target.value as TaskType | ''
+                  setTaskType(type)
+                  if (type) setTaskTitle(taskTypeInfo[type].title)
+                }}
+              >
+                <option value="">普通任务</option>
+                {taskTypes.map((type) => (
+                  <option
+                    key={type}
+                    value={type}
+                    disabled={
+                      createStatus !== 'todo' ||
+                      data.tasks.some(
+                        (task) => task.requirementId === scope.requirementId && task.type === type,
+                      )
+                    }
+                  >
+                    {taskTypeInfo[type].label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <TextField
               label="任务名称"
               autoFocus

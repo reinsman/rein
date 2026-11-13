@@ -1,10 +1,12 @@
 import { useRef, useState } from 'react'
-import { ButtonBase, Menu, MenuItem, Paper } from '@mui/material'
+import { Button, ButtonBase, Menu, MenuItem, Paper } from '@mui/material'
 import type { AppData, ChatScope, Task, TaskStatus } from '../types'
 import { reinService, taskHasActiveAgent, tasksInScope } from '../services/reinService'
-import { Action, AgentAvatar, Icon, StateIcon, StatusDot } from './shared'
+import { Action, AgentAvatar, Icon, StatusDot } from './shared'
 import { statusLabels } from '../constants'
 import { TaskDependencies } from './TaskDependencies'
+import { blockedReason, taskProgress, taskTypes } from '../services/sdd'
+import { TaskTypeBadge } from './TaskTypeBadge'
 
 interface Props {
   data: AppData
@@ -15,6 +17,7 @@ interface Props {
   notify: (message: string) => void
 }
 export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }: Props) {
+  const [initializing, setInitializing] = useState(false)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<{ status: TaskStatus; beforeId?: string } | null>(
     null,
@@ -55,6 +58,30 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
         <Icon name="checklist" size={20} />
         <h2>Todo</h2>
         <span className="spacer" />
+        {scope.requirementId &&
+          taskTypes.some(
+            (type) =>
+              !data.tasks.some(
+                (task) => task.requirementId === scope.requirementId && task.type === type,
+              ),
+          ) && (
+            <Button
+              disabled={initializing}
+              onClick={async () => {
+                setInitializing(true)
+                try {
+                  await reinService.initializeSdd(scope.requirementId!)
+                  notify('SDD 阶段任务已创建')
+                } catch (error) {
+                  notify(error instanceof Error ? error.message : '无法创建阶段任务')
+                } finally {
+                  setInitializing(false)
+                }
+              }}
+            >
+              初始化 SDD
+            </Button>
+          )}
         <Action
           label="筛选任务"
           icon="filter"
@@ -106,6 +133,7 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
                   .filter((t) => t.status === status)
                   .map((task) => {
                     const agent = data.agents.find((a) => a.id === task.agentId)
+                    const blocked = blockedReason(task, data.tasks)
                     return (
                       <Paper
                         data-task-id={task.id}
@@ -149,27 +177,12 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
                           finishDrop()
                         }}
                         variant="outlined"
-                        className={`task-card ${selectedId === task.id ? 'selected' : ''} ${task.execution === 'waiting' ? 'waiting-task' : ''} ${draggedId === task.id ? 'is-dragging' : ''} ${draggedId && dropTarget?.beforeId === task.id ? 'drop-before' : ''}`}
+                        className={`task-card ${selectedId === task.id ? 'selected' : ''} ${task.execution === 'waiting' ? 'waiting-task' : ''} ${blocked ? 'is-blocked' : ''} ${draggedId === task.id ? 'is-dragging' : ''} ${draggedId && dropTarget?.beforeId === task.id ? 'drop-before' : ''}`}
                         key={task.id}
                       >
                         <div className="task-card-meta">
-                          <span
-                            title={
-                              taskHasActiveAgent(task)
-                                ? 'Agent 会话占用中，请先停止任务再移动'
-                                : '可拖拽调整顺序或移动到其他栏'
-                            }
-                          >
-                            #{task.displayId ?? task.id}
-                          </span>
-                          {!!task.dependsOn?.length && (
-                            <span
-                              className="task-dependency-label"
-                              title={`前置任务：${task.dependsOn.join('、')}`}
-                            >
-                              依赖 {task.dependsOn.join('、')}
-                            </span>
-                          )}
+                          <TaskTypeBadge type={task.type} />
+                          <span className="task-card-number">{task.displayId ?? task.id}</span>
                           {task.execution === 'waiting' && (
                             <span className="needs-reply-badge">需你回复</span>
                           )}
@@ -187,18 +200,31 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
                           }}
                         >
                           <strong>{task.title}</strong>
-                          <div className="task-assignee">
-                            <AgentAvatar agent={agent} size={18} />
-                            <span>
-                              {agent?.name}
-                              {task.reviewerId
-                                ? ` / ${data.agents.find((a) => a.id === task.reviewerId)?.name ?? '待分配'}`
-                                : ` · ${agent?.role}`}
-                            </span>
+                          {task.type && (
+                            <p className="task-card-progress">
+                              {taskProgress(
+                                task,
+                                data.tasks.filter(
+                                  (value) => value.requirementId === task.requirementId,
+                                ),
+                              )}
+                            </p>
+                          )}
+                          <div className={`task-state ${blocked ? 'blocked' : task.execution}`}>
+                            {blocked ? (
+                              <Icon name="lock" size={13} />
+                            ) : (
+                              <StatusDot status={task.status} />
+                            )}
+                            <span>{blocked || task.statusText}</span>
                           </div>
-                          <div className={`task-state ${task.execution}`}>
-                            <StateIcon state={task.execution} />
-                            <span>{task.statusText}</span>
+                          <div className="task-assignee">
+                            {agent ? (
+                              <AgentAvatar agent={agent} size={18} />
+                            ) : (
+                              <Icon name="person" size={16} />
+                            )}
+                            <span>{agent?.name ?? '未分配'}</span>
                           </div>
                         </ButtonBase>
                       </Paper>

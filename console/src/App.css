@@ -2476,7 +2476,7 @@ textarea {
 .hub-run-reference dd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-family: "JetBrains Mono", monospace;
+  font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
 }
 .hub-reasoning p {
@@ -2633,4 +2633,299 @@ textarea {
   font-size: 11px;
   line-height: 18px;
   color: var(--secondary);
+}
+
+/* Typed SDD tasks reuse the Todo board and the existing floating drawer. */
+.task-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  color: #596273;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.task-card-number {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.task-card-progress {
+  color: #596273;
+  font-size: 12px;
+  line-height: 18px;
+}
+.task-state.blocked {
+  color: #596273;
+  align-items: flex-start;
+}
+.task-card.is-blocked {
+  background: #fafbfc;
+}
+.task-card-main .task-state,
+.task-card-main .task-assignee {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.sdd-participants {
+  color: #596273;
+}
+.sdd-task-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sdd-participants select,
+.sdd-check-status,
+.create-task-type select {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 5px 8px;
+  color: #202632;
+  font: inherit;
+}
+.sdd-participants select {
+  max-width: 160px;
+}
+.sdd-dependencies {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 4px 20px 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--muted);
+  color: #596273;
+  font-size: 12px;
+}
+.sdd-dependencies .MuiButton-root {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.sdd-success,
+.sdd-check-status.passed {
+  color: #078c5a;
+}
+.sdd-check-status.failed {
+  color: #b3261e;
+}
+.sdd-task-alert {
+  margin: 0 20px 8px;
+}
+.sdd-detail-body {
+  display: block;
+}
+.sdd-task-content {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.sdd-document-toolbar,
+.sdd-document-toolbar > span,
+.sdd-section-heading,
+.sdd-view-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sdd-document-toolbar {
+  justify-content: space-between;
+  color: #596273;
+  font-size: 12px;
+}
+.sdd-view-switch {
+  gap: 2px;
+}
+.sdd-view-switch [aria-pressed='true'] {
+  background: #eaf2ff;
+}
+.sdd-document {
+  color: #202632;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.sdd-document h1,
+.sdd-document h2,
+.sdd-document h3 {
+  margin: 24px 0 10px;
+}
+.sdd-document > :first-child {
+  margin-top: 0;
+}
+.sdd-document p + p {
+  margin-top: 10px;
+}
+.sdd-document ul,
+.sdd-document ol {
+  padding-left: 22px;
+}
+.sdd-document pre {
+  padding: 12px;
+  background: var(--muted);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.sdd-document table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.sdd-document td,
+.sdd-document th {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.sdd-section-heading {
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.sdd-section-heading > span:not(.spacer),
+.sdd-section-note {
+  font-size: 12px;
+  color: #596273;
+}
+.sdd-section-note {
+  margin-bottom: 12px;
+}
+.sdd-criterion-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sdd-item-id {
+  color: var(--primary);
+  font-size: 12px;
+  line-height: 28px;
+  white-space: nowrap;
+}
+.sdd-criterion-row p,
+.sdd-subtask-row p {
+  margin: 3px 0;
+  overflow-wrap: anywhere;
+}
+.sdd-subtask-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sdd-subtask-row > .MuiFormControl-root,
+.sdd-subtask-row > p {
+  flex: 1;
+  min-width: 0;
+}
+.sdd-subtask-row > .MuiCheckbox-root {
+  padding: 5px;
+}
+.sdd-subtask-row.is-complete > p {
+  color: #596273;
+}
+.sdd-verification-row {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sdd-verification-heading {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.sdd-verification-heading p {
+  overflow-wrap: anywhere;
+}
+.sdd-check-evidence {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #596273;
+}
+.sdd-history-row {
+  display: grid;
+  grid-template-columns: minmax(115px, 0.6fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sdd-history-row time {
+  color: #596273;
+  font-size: 12px;
+}
+.sdd-history-row span {
+  overflow-wrap: anywhere;
+}
+.sdd-detail-footer .readonly-status {
+  align-items: flex-start;
+  color: #596273;
+}
+.sdd-detail-footer .detail-controls {
+  flex-wrap: wrap;
+}
+.sdd-detail-footer .detail-controls .MuiButton-root {
+  padding: 4px 10px;
+}
+.sdd-detail-footer .detail-controls .MuiButton-contained {
+  color: #fff;
+}
+.create-task-type {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+@container detail (max-width: 480px) {
+  .detail-header {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 65px;
+    padding-block: 8px;
+    gap: 6px;
+  }
+  .detail-header h2 {
+    order: 5;
+    flex-basis: 100%;
+  }
+  .sdd-dependencies {
+    margin-inline: 16px;
+  }
+  .sdd-verification-heading {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+  .sdd-verification-heading p {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .sdd-check-status {
+    justify-self: end;
+  }
+  .sdd-history-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+.sdd-editor-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.task-detail .detail-tabs .MuiTab-root {
+  width: auto;
+  min-width: max-content;
+  white-space: nowrap;
+}
+@media (max-width: 599px) {
+  .sdd-task-content .MuiInputBase-input {
+    font-size: 16px;
+  }
 }

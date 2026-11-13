@@ -16,10 +16,38 @@ export interface Agent extends AgentConfig {
   cli: string
   backend: 'native' | 'a2a'
 }
+export type TaskType = 'spec' | 'design' | 'tasks' | 'verification'
+export interface Criterion {
+  id: string
+  text: string
+}
+export interface Subtask {
+  id: string
+  title: string
+  completed: boolean
+}
+export interface VerificationCheck {
+  criterion_id: string
+  status: 'pending' | 'passed' | 'failed'
+  evidence: string
+}
+export interface TaskActivity {
+  at: number
+  message: string
+}
 export interface Task {
   id: string
   title: string
   status: 'todo' | 'running' | 'done'
+  type?: TaskType
+  depends_on?: string[]
+  description?: string
+  agent_id?: string
+  document?: string
+  criteria?: Criterion[]
+  subtasks?: Subtask[]
+  checks?: VerificationCheck[]
+  history?: TaskActivity[]
 }
 export interface Requirement {
   id: string

@@ -725,3 +725,96 @@ fn project_directories_default_to_first_validate_and_survive_restart() {
         "still editable"
     );
 }
+
+#[test]
+fn sdd_workflow_rejects_bypassed_gates_and_persists_artifacts() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    let ids: Vec<_> = (0..4).map(|_| Uuid::new_v4().to_string()).collect();
+    let tasks: Vec<_> = ["spec", "design", "tasks", "verification"]
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            let mut value = json!({"id":ids[index],"title":kind,"type":kind,"status":"todo"});
+            if index > 0 {
+                value["depends_on"] = json!([ids[index - 1]]);
+            }
+            value
+        })
+        .collect();
+    let initial = json!({"id":Uuid::new_v4(),"name":"SDD","description":"","directories":[],"preferred_directory":null,"requirements":[{"id":Uuid::new_v4(),"title":"typed tasks","description":"","tasks":tasks}]});
+    let mut project = h.api("POST", "/api/projects", json!({"project":initial}))["project"].clone();
+    let save = |previous: &Value, next: Value| {
+        h.api(
+            "POST",
+            "/api/projects",
+            json!({"project":next,"previous":previous}),
+        )["project"]
+            .clone()
+    };
+    let reject = |previous: &Value, next: Value| {
+        assert_eq!(
+            h.http(
+                "POST",
+                "/api/projects",
+                json!({"project":next,"previous":previous})
+            )
+            .0,
+            400
+        )
+    };
+    let mut invalid = project.clone();
+    invalid["requirements"][0]["tasks"][1]["status"] = json!("running");
+    reject(&project, invalid);
+    let criterion = Uuid::new_v4();
+    for index in 0..3 {
+        let mut next = project.clone();
+        next["requirements"][0]["tasks"][index]["status"] = json!("running");
+        project = save(&project, next);
+        let mut next = project.clone();
+        let task = &mut next["requirements"][0]["tasks"][index];
+        match index {
+            0 => {
+                // A real document can exceed the old 64 KiB HTTP body limit after JSON encoding.
+                task["document"] = json!(format!("## 行为\n{}", "\"".repeat(40000)));
+                task["criteria"] = json!([{"id":criterion,"text":"expected behavior"}]);
+            }
+            1 => task["document"] = json!("Implementation boundaries and failure paths"),
+            _ => {
+                task["subtasks"] =
+                    json!([{"id":Uuid::new_v4(),"title":"implement","completed":false}])
+            }
+        }
+        task["status"] = json!("done");
+        if index == 2 {
+            reject(&project, next.clone());
+            next["requirements"][0]["tasks"][index]["subtasks"][0]["completed"] = json!(true);
+        }
+        project = save(&project, next);
+    }
+    let mut next = project.clone();
+    next["requirements"][0]["tasks"][3]["status"] = json!("running");
+    project = save(&project, next);
+    let mut next = project.clone();
+    next["requirements"][0]["tasks"][3]["status"] = json!("done");
+    next["requirements"][0]["tasks"][3]["checks"] =
+        json!([{"criterion_id":criterion,"status":"passed","evidence":""}]);
+    reject(&project, next.clone());
+    next["requirements"][0]["tasks"][3]["checks"][0]["evidence"] =
+        json!("Manual acceptance and regression evidence");
+    project = save(&project, next);
+    let mut invalid = project.clone();
+    invalid["requirements"][0]["tasks"][0]["document"] = json!("changed without reopening");
+    reject(&project, invalid);
+    let mut reopened = project.clone();
+    reopened["requirements"][0]["tasks"][2]["status"] = json!("running");
+    reopened["requirements"][0]["tasks"][3]["status"] = json!("todo");
+    reject(&project, reopened.clone());
+    reopened["requirements"][0]["tasks"][3]["checks"][0]["status"] = json!("pending");
+    project = save(&project, reopened);
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(
+        h.api("GET", "/api/projects", Value::Null)["projects"][0],
+        project
+    );
+}

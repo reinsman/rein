@@ -1,22 +1,30 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
+  Alert,
   Button,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Drawer,
-  InputBase,
-  MenuItem,
-  Select,
   Tab,
   Tabs,
 } from '@mui/material'
 import type { AppData, Task, TaskStatus } from '../types'
+import type { TaskDraft } from '../services/sdd'
+import {
+  blockedReason,
+  completionError,
+  predecessors,
+  taskDraft,
+  taskNumber,
+  taskTypeInfo,
+} from '../services/sdd'
 import { reinService } from '../services/reinService'
-import { Action, AgentAvatar, Icon, StateIcon } from './shared'
+import { Action, Icon, StatusDot } from './shared'
 import { statusLabels } from '../constants'
-import { SpecProgress } from './SpecProgress'
-import { TaskResults } from './TaskResults'
+import { TaskTypeBadge } from './TaskTypeBadge'
+import { TaskContent } from './TaskContent'
 
 interface Props {
   data: AppData
@@ -29,7 +37,6 @@ interface Props {
   onExpand: () => void
   onClose: () => void
   onTask: (id: string) => void
-  onStatus: (task: Task, status: TaskStatus) => void
   notify: (message: string) => void
 }
 export function TaskDetails({
@@ -43,14 +50,20 @@ export function TaskDetails({
   onExpand,
   onClose,
   onTask,
-  onStatus,
   notify,
 }: Props) {
   const [tab, setTab] = useState(0)
-  const [agentId, setAgentId] = useState(task?.agentId ?? 'sam')
-  const [takeover, setTakeover] = useState(false)
-  const [command, setCommand] = useState('')
-  const [history, setHistory] = useState(false)
+  const [draft, setDraft] = useState(() => taskDraft(task))
+  const [baseline, setBaseline] = useState(() => JSON.stringify(taskDraft(task)))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [discard, setDiscard] = useState(false)
+  const dirty = JSON.stringify(draft) !== baseline
+  const requestClose = useCallback(() => {
+    if (saving) return
+    if (dirty) setDiscard(true)
+    else onClose()
+  }, [saving, dirty, onClose])
   const [viewportWidth, setViewportWidth] = useState(window.innerWidth)
   const [resizing, setResizing] = useState(false)
   const [dockedToSidebar, setDockedToSidebar] = useState(false)
@@ -63,7 +76,6 @@ export function TaskDetails({
   const minimumWidth = Math.min(360, defaultWidth, normalWidth, maximumWidth)
   const renderedWidth = expanded ? maximumWidth : normalWidth
   const previousLayout = useRef({ availableLeft, viewportWidth, maximumWidth, normalWidth })
-  const terminalRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
     const previous = previousLayout.current
@@ -84,31 +96,113 @@ export function TaskDetails({
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !document.querySelector('[role="dialog"], [role="menu"]'))
-        onClose()
+        requestClose()
     }
     window.addEventListener('keydown', handleEscape)
     return () => window.removeEventListener('keydown', handleEscape)
-  }, [onClose])
+  }, [requestClose])
   useEffect(() => {
     if (!task) return
-    const outside = (event: PointerEvent) => {
+    const outside = (event: Event) => {
       const target = event.target
       if (!(target instanceof Element) || detailRef.current?.contains(target)) return
-      if (target.closest('.MuiDialog-root, .MuiPopover-root, .MuiMenu-root')) return
-      if (target.closest('.sidebar-toggle')) return
-      onClose()
+      if (target.closest('.MuiDialog-root, .MuiPopover-root, .MuiMenu-root, .sidebar-toggle'))
+        return
+      if (saving || dirty) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (!saving) setDiscard(true)
+      } else if (event.type === 'pointerdown') onClose()
     }
-    document.addEventListener('pointerdown', outside)
-    return () => document.removeEventListener('pointerdown', outside)
-  }, [task, onClose])
-  const session = data.sessions.find((s) => s.taskId === task?.id && s.agentId === agentId)
+    document.addEventListener('pointerdown', outside, true)
+    document.addEventListener('click', outside, true)
+    return () => {
+      document.removeEventListener('pointerdown', outside, true)
+      document.removeEventListener('click', outside, true)
+    }
+  }, [task, dirty, saving, onClose])
   useEffect(() => {
-    if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight
-  }, [session?.lines.length, agentId])
+    if (!dirty) return
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty])
   if (!task) return null
-  const owner = data.agents.find((a) => a.id === task.agentId)
-  const reviewer = data.agents.find((a) => a.id === task.reviewerId)
-  const canInput = takeover && task.status === 'running' && task.execution !== 'stopped'
+  const related = data.tasks.filter((value) => value.requirementId === task.requirementId)
+  const dependencies = predecessors(task, related)
+  const blocked = blockedReason(task, related)
+  const completion = completionError({ ...task, ...draft }, related)
+  const readOnly = task.status === 'done'
+  const info = task.type ? taskTypeInfo[task.type] : undefined
+  const canRepair =
+    task.type === 'verification' &&
+    task.status === 'running' &&
+    draft.checks.some((check) => check.status === 'failed')
+  async function save(status?: TaskStatus) {
+    setSaving(true)
+    setError('')
+    try {
+      const action =
+        status === 'done'
+          ? task!.type === 'verification'
+            ? '确认验收通过'
+            : '确认完成任务'
+          : status === 'running'
+            ? readOnly
+              ? '重新打开任务'
+              : '开始任务'
+            : '保存草稿'
+      const saved = await reinService.saveTask(
+        task!.id,
+        { ...draft, ...(status ? { status } : {}) },
+        action,
+      )
+      const next = taskDraft(saved)
+      setDraft(next)
+      setBaseline(JSON.stringify(next))
+      notify(
+        status === 'done'
+          ? '任务已完成，后续阶段已解锁'
+          : status === 'running'
+            ? '任务已开始'
+            : '草稿已保存',
+      )
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '保存失败，请重试。')
+    } finally {
+      setSaving(false)
+    }
+  }
+  async function repair() {
+    const development = related.find((value) => value.type === 'tasks')
+    if (!development) return
+    setSaving(true)
+    setError('')
+    try {
+      await reinService.saveTask(task!.id, draft, '记录未通过的验收结果')
+      await reinService.moveTask(development.id, 'running')
+      onTask(development.id)
+      notify('开发任务已重新打开，修复后请重新验证。')
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '无法返回开发任务。')
+    } finally {
+      setSaving(false)
+    }
+  }
+  function changeDraft(patch: Partial<TaskDraft>) {
+    setDraft((current) => ({ ...current, ...patch }))
+    setError('')
+  }
+  function openDependency(id: string) {
+    if (dirty) {
+      setError('请先保存草稿，再切换到前置任务。')
+      return
+    }
+    onTask(id)
+  }
   function resize(nextWidth: number) {
     const next = Math.max(minimumWidth, Math.min(maximumWidth, nextWidth))
     setDockedToSidebar(false)
@@ -178,8 +272,8 @@ export function TaskDetails({
             </span>
           </div>
           <header className="panel-header detail-header">
-            <Icon name="detailDoc" size={20} />
-            <small>#{task.displayId ?? task.id}</small>
+            <TaskTypeBadge type={task.type} />
+            <small>{task.displayId ?? taskNumber(task)}</small>
             <h2>{task.title}</h2>
             <span className="spacer" />
             <Action
@@ -187,207 +281,192 @@ export function TaskDetails({
               icon="expand"
               onClick={onExpand}
             />
-            <Action label="关闭任务详情" icon="close" onClick={onClose} />
+            <Action label="关闭任务详情" icon="close" onClick={requestClose} />
           </header>
-          <div className="detail-participants">
-            <span className={`detail-status ${task.execution}`}>
-              <StateIcon state={task.execution} />
+          <div className="detail-participants sdd-participants">
+            <span className="sdd-task-status">
+              <StatusDot status={task.status} />
               {statusLabels[task.status]}
             </span>
-            <AgentAvatar agent={owner} size={18} />
-            <span>
-              {owner?.name} · {owner?.role}
-            </span>
-            {reviewer && (
-              <>
-                <AgentAvatar agent={reviewer} size={18} />
-                <span>
-                  {reviewer.name} · {reviewer.role}
-                </span>
-              </>
-            )}
+            <span className="spacer" />
+            <label htmlFor={`task-agent-${task.id}`}>负责人</label>
+            <select
+              id={`task-agent-${task.id}`}
+              value={draft.agent_id}
+              disabled={readOnly || saving}
+              onChange={(event) => changeDraft({ agent_id: event.target.value })}
+            >
+              <option value="">未分配</option>
+              {draft.agent_id && !data.agents.some((agent) => agent.id === draft.agent_id) && (
+                <option value={draft.agent_id}>{draft.agent_id}（已移除）</option>
+              )}
+              {data.agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name}
+                </option>
+              ))}
+            </select>
           </div>
-          <p className="detail-description">{task.description}</p>
+          {!!dependencies.length && (
+            <div className="sdd-dependencies" aria-label="前置任务">
+              <span>前置任务</span>
+              {dependencies.map((value) => (
+                <Button key={value.id} onClick={() => openDependency(value.id)}>
+                  {taskNumber(value)} {value.title}
+                  <span className={value.status === 'done' ? 'sdd-success' : 'muted'}>
+                    {value.status === 'done' ? '已完成' : '未完成'}
+                  </span>
+                </Button>
+              ))}
+            </div>
+          )}
+          {error && (
+            <Alert severity="error" className="sdd-task-alert">
+              {error}
+            </Alert>
+          )}
           <div className="detail-tabs">
             <Tabs
               value={tab}
               onChange={(_, value: number) => setTab(value)}
               aria-label="任务详情页签"
             >
-              <Tab label="任务" id="detail-tab-0" aria-controls="detail-panel-0" />
-              <Tab label="CLI" id="detail-tab-1" aria-controls="detail-panel-1" />
-              <Tab label="结果" id="detail-tab-2" aria-controls="detail-panel-2" />
+              <Tab
+                label={info?.tab ?? '任务说明'}
+                id="detail-tab-0"
+                aria-controls="detail-panel-0"
+              />
+              <Tab label="工作记录" id="detail-tab-1" aria-controls="detail-panel-1" />
             </Tabs>
-            <span className="spacer" />
-            {tab === 1 && (
-              <>
-                <Select
-                  className="agent-select"
-                  size="small"
-                  value={agentId}
-                  onChange={(e) => {
-                    setAgentId(e.target.value)
-                    setTakeover(false)
-                  }}
-                  inputProps={{ 'aria-label': '切换 Agent 会话' }}
-                >
-                  {data.agents.map((a) => (
-                    <MenuItem value={a.id} key={a.id}>
-                      {a.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-                <Button
-                  variant="outlined"
-                  startIcon={<Icon name="keyboard" />}
-                  onClick={() => {
-                    setTab(1)
-                    setTakeover(!takeover)
-                    notify(takeover ? '已恢复只读模式' : '已接管模拟终端输入；不会执行真实命令')
-                  }}
-                  disabled={task.status !== 'running' || task.execution === 'stopped'}
-                >
-                  {takeover ? '释放输入' : '接管输入'}
-                </Button>
-              </>
-            )}
           </div>
           <div
-            className="detail-body"
+            className="detail-body sdd-detail-body"
             role="tabpanel"
             id={`detail-panel-${tab}`}
             aria-labelledby={`detail-tab-${tab}`}
           >
-            {tab === 1 && (
-              <div className="terminal">
-                <div className="terminal-scroll" ref={terminalRef}>
-                  <div className="terminal-status">
-                    <StateIcon state={task.execution} />
-                    <span>
-                      {task.execution === 'executing'
-                        ? '正在执行回归测试…'
-                        : task.execution === 'waiting'
-                          ? '等待用户回复…'
-                          : task.statusText}
-                    </span>
-                  </div>
-                  <div className="terminal-lines" role="log" aria-label="模拟终端输出">
-                    {session?.lines.map((line, i) => (
-                      <div key={i} className={line.tone ?? ''}>
-                        {line.text || '\u00a0'}
-                      </div>
-                    )) ?? <div>此 Agent 尚无会话记录。</div>}
-                  </div>
-                </div>
-                {canInput && (
-                  <form
-                    className="terminal-input"
-                    onSubmit={async (e) => {
-                      e.preventDefault()
-                      if (!command.trim()) return
-                      await reinService.command(task.id, agentId, command)
-                      setCommand('')
-                    }}
-                  >
-                    <span>$</span>
-                    <InputBase
-                      autoFocus
-                      value={command}
-                      onChange={(e) => setCommand(e.target.value)}
-                      placeholder="输入模拟命令…"
-                      inputProps={{ 'aria-label': '模拟终端命令' }}
-                    />
-                    <Button type="submit" disabled={!command.trim()}>
-                      发送
-                    </Button>
-                  </form>
+            {tab === 0 ? (
+              <fieldset className="sdd-editor-fields" disabled={saving}>
+                <TaskContent task={task} tasks={data.tasks} draft={draft} onChange={changeDraft} />
+              </fieldset>
+            ) : (
+              <div className="sdd-task-history">
+                <h3>工作记录</h3>
+                <p className="sdd-section-note">
+                  这里记录任务的创建、保存和确认操作。负责人分配不会自动启动 Agent。
+                </p>
+                {task.history?.length ? (
+                  [...task.history].reverse().map((item, index) => (
+                    <div className="sdd-history-row" key={`${item.at}-${index}`}>
+                      <time dateTime={new Date(item.at).toISOString()}>
+                        {new Date(item.at).toLocaleString('zh-CN')}
+                      </time>
+                      <span>{item.message}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">尚无工作记录。</p>
                 )}
               </div>
             )}
-            {tab === 0 && (
-              <div className="activity-list">
-                <SpecProgress task={task} tasks={data.tasks} onTask={onTask} />
-                <h3 className="activity-log-heading">执行记录</h3>
-                {session?.activities.map((item, i) => (
-                  <div className="activity-row" key={i}>
-                    <span className="activity-dot" />
-                    <time>{item.time}</time>
-                    <span>{item.text}</span>
-                  </div>
-                )) ?? <p>此 Agent 尚无活动。</p>}
-                <p className="muted">活动由前端模拟数据生成。</p>
-              </div>
-            )}
-            {tab === 2 && <TaskResults task={task} onStatus={onStatus} />}
           </div>
-          <footer className="detail-footer">
+          <footer className="detail-footer sdd-detail-footer">
             <div className="readonly-status">
-              <Icon name="info" size={13} />
+              <Icon name={blocked ? 'lock' : 'info'} size={13} />
               <span>
-                {tab === 1
-                  ? takeover
-                    ? '已接管输入'
-                    : '当前只读 · 接管后可直接交互'
-                  : '步骤进度随 Agent 执行状态更新'}
-                <span className="simulation-label"> · {tab === 1 ? '模拟终端' : '模拟数据'}</span>
+                {blocked ||
+                  (readOnly
+                    ? '已确认；重新打开会将后续阶段移回待开始。'
+                    : task.status === 'running' && completion
+                      ? completion
+                      : dirty
+                        ? '有尚未保存的更改'
+                        : '任务进度与验收结果由你确认。')}
               </span>
             </div>
             <div className="detail-controls">
-              {task.status === 'todo' ? (
+              {!readOnly && (
                 <Button
-                  startIcon={<Icon name="spinner" size={12} />}
-                  onClick={() => onStatus(task, 'running')}
+                  variant="outlined"
+                  disabled={!dirty || saving}
+                  onClick={() => {
+                    void save()
+                  }}
+                >
+                  保存草稿
+                </Button>
+              )}
+              {canRepair && (
+                <Button
+                  disabled={saving}
+                  onClick={() => {
+                    void repair()
+                  }}
+                >
+                  保存并返回开发修复
+                </Button>
+              )}
+              <span className="spacer" />
+              {readOnly ? (
+                <Button
+                  variant="outlined"
+                  disabled={saving}
+                  onClick={() => {
+                    void save('running')
+                  }}
+                >
+                  重新打开
+                </Button>
+              ) : task.status === 'todo' ? (
+                <Button
+                  variant="contained"
+                  disabled={!!blocked || saving}
+                  onClick={() => {
+                    void save('running')
+                  }}
                 >
                   开始任务
                 </Button>
               ) : (
                 <Button
-                  startIcon={<Icon name="stop" />}
-                  disabled={task.status === 'done' || task.execution === 'stopped'}
-                  onClick={async () => {
-                    await reinService.updateTask(task.id, {
-                      status: 'todo',
-                      execution: 'stopped',
-                      statusText: '已停止',
-                    })
-                    setTakeover(false)
-                    notify('模拟任务已停止')
+                  variant="contained"
+                  disabled={!!completion || saving}
+                  onClick={() => {
+                    void save('done')
                   }}
                 >
-                  停止任务
+                  {task.type === 'verification'
+                    ? '确认验收'
+                    : task.type === 'tasks'
+                      ? '完成开发'
+                      : '确认并完成'}
                 </Button>
               )}
-              <span className="spacer" />
-              <Button startIcon={<Icon name="open" />} onClick={() => setHistory(true)}>
-                查看会话记录
-              </Button>
             </div>
           </footer>
         </section>
       </Drawer>
-      <Dialog open={history} onClose={() => setHistory(false)} fullWidth maxWidth="sm">
-        <DialogTitle className="dialog-title">
-          会话记录 · #{task.displayId ?? task.id}
-          <Action label="关闭会话记录" icon="close" onClick={() => setHistory(false)} />
-        </DialogTitle>
-        <DialogContent>
-          <p className="muted">本地模拟会话，不代表已连接真实 Agent。</p>
-          {data.sessions
-            .filter((s) => s.taskId === task.id)
-            .map((s) => (
-              <div className="session-record" key={s.id}>
-                <strong>
-                  {data.agents.find((a) => a.id === s.agentId)?.name} · {s.startedAt}
-                </strong>
-                <small>{s.id}</small>
-                {s.activities.map((a, i) => (
-                  <p key={i}>
-                    {a.time}　{a.text}
-                  </p>
-                ))}
-              </div>
-            ))}
-        </DialogContent>
+      <Dialog
+        open={discard}
+        onClose={() => setDiscard(false)}
+        maxWidth="xs"
+        fullWidth
+        aria-labelledby="discard-task-title"
+      >
+        <DialogTitle id="discard-task-title">草稿尚未保存</DialogTitle>
+        <DialogContent>关闭任务详情会丢失本次尚未保存的更改。</DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDiscard(false)}>继续编辑</Button>
+          <Button
+            color="error"
+            onClick={() => {
+              setDiscard(false)
+              onClose()
+            }}
+          >
+            放弃更改并关闭
+          </Button>
+        </DialogActions>
       </Dialog>
     </>
   )

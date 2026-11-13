@@ -8,9 +8,9 @@ import type {
   Task,
   TaskStatus,
 } from '../types'
-import type { Project as StoredProject } from '../localTypes'
+import type { Project as StoredProject, Task as StoredTask, TaskType } from '../localTypes'
 import { localService, request } from './localService'
-import { createSpecPhases } from './spec'
+import { addSddTasks, blockedReason, completionError, taskNumber, taskTypes } from './sdd'
 
 let data: AppData = {
   projects: [],
@@ -47,22 +47,20 @@ function applyProjects(values: StoredProject[]) {
       description: r.description,
     })),
   )
-  const previous = new Map(data.tasks.map((task) => [task.id, task]))
   data.tasks = values.flatMap((p) =>
     p.requirements.flatMap((r) =>
       r.tasks.map((t) => ({
-        ...previous.get(t.id),
+        ...t,
         id: t.id,
-        displayId: `T-${t.id.slice(0, 8)}`,
+        displayId: taskNumber(t),
         title: t.title,
         requirementId: r.id,
-        agentId: previous.get(t.id)?.agentId ?? '',
+        agentId: t.agent_id ?? '',
         status: t.status,
         execution: t.status === 'done' ? ('completed' as const) : ('queued' as const),
         statusText: { todo: '待执行', running: '进行中', done: '已完成' }[t.status],
-        description: previous.get(t.id)?.description ?? t.title,
-        dependsOn: previous.get(t.id)?.dependsOn ?? [],
-        specPhases: previous.get(t.id)?.specPhases ?? createSpecPhases(t.title, t.status),
+        description: t.description ?? '',
+        dependsOn: t.depends_on ?? [],
       })),
     ),
   )
@@ -142,38 +140,117 @@ export const reinService = {
     if (!task) throw new Error('任务不存在。')
     await this.moveTask(id, patch.status ?? task.status)
   },
-  async moveTask(id: string, status: TaskStatus, beforeId?: string) {
-    if (beforeId === id) return
-    const task = data.tasks.find((t) => t.id === id)
+  async saveTask(id: string, patch: Partial<StoredTask>, action = '保存草稿', beforeId?: string) {
+    const task = data.tasks.find((value) => value.id === id)
     if (!task) throw new Error('任务不存在。')
-    if (taskHasActiveAgent(task)) throw new Error('Agent 会话仍在运行，请先停止任务再移动。')
+    if (taskHasActiveAgent(task)) throw new Error('Agent 会话仍在运行，请先停止任务再修改。')
     const previous = projects.find((p) => p.requirements.some((r) => r.id === task.requirementId))
     if (!previous) throw new Error('所属项目不存在。')
     const next = structuredClone(previous)
     const requirement = next.requirements.find((r) => r.id === task.requirementId)!
-    const value = requirement.tasks.find((t) => t.id === id)!
-    value.status = status
-    requirement.tasks = requirement.tasks.filter((t) => t.id !== id)
-    if (beforeId) {
-      const target = requirement.tasks.findIndex((t) => t.id === beforeId && t.status === status)
-      if (target < 0) throw new Error('目标位置已变化，请重试。')
-      requirement.tasks.splice(target, 0, value)
-    } else {
-      requirement.tasks.push(value)
+    const value = requirement.tasks.find((item) => item.id === id)!
+    const oldStatus = value.status
+    Object.assign(value, patch)
+    if (value.status !== 'todo') {
+      const reason = blockedReason(value, requirement.tasks)
+      if (reason) throw new Error(reason)
     }
+    if (value.status === 'done' && oldStatus !== 'done') {
+      const reason = completionError({ ...value, status: oldStatus }, requirement.tasks)
+      if (reason) throw new Error(reason)
+    }
+    const log = (item: StoredTask, message: string) => {
+      // shortcut: keep the latest 200 actions here; use SQLite when a complete audit trail is needed.
+      item.history = [...(item.history ?? []).slice(-199), { at: Date.now(), message }]
+    }
+    if (value.type && oldStatus === 'done' && value.status !== 'done') {
+      const index = taskTypes.indexOf(value.type)
+      for (const dependent of requirement.tasks) {
+        if (dependent.type && taskTypes.indexOf(dependent.type) > index) {
+          dependent.status = 'todo'
+          if (dependent.type === 'verification')
+            dependent.checks = dependent.checks?.map((check) => ({ ...check, status: 'pending' }))
+          log(dependent, `前置任务 ${taskNumber(value)} 重新打开，需要复核`)
+        }
+      }
+    }
+    if (value.type === 'spec' && patch.criteria) {
+      const verification = requirement.tasks.find((item) => item.type === 'verification')
+      if (verification && JSON.stringify(patch.criteria) !== JSON.stringify(task.criteria ?? []))
+        verification.checks = verification.checks
+          ?.filter((check) =>
+            patch.criteria!.some((criterion) => criterion.id === check.criterion_id),
+          )
+          .map((check) => ({ ...check, status: 'pending' }))
+    }
+    if (value.type === 'verification' && value.status === 'running') {
+      if (oldStatus === 'done')
+        value.checks = value.checks?.map((check) => ({ ...check, status: 'pending' }))
+      const criteria = requirement.tasks.find((item) => item.type === 'spec')?.criteria ?? []
+      value.checks = criteria.map(
+        (criterion) =>
+          value.checks?.find((check) => check.criterion_id === criterion.id) ?? {
+            criterion_id: criterion.id,
+            status: 'pending',
+            evidence: '',
+          },
+      )
+    }
+    log(value, action)
+    if (patch.status !== undefined && beforeId !== id) {
+      requirement.tasks = requirement.tasks.filter((item) => item.id !== id)
+      if (beforeId) {
+        const index = requirement.tasks.findIndex(
+          (item) => item.id === beforeId && item.status === value.status,
+        )
+        if (index < 0) throw new Error('目标位置已变化，请重试。')
+        requirement.tasks.splice(index, 0, value)
+      } else requirement.tasks.push(value)
+    }
+    await saveProjectFile(next, previous)
+    return structuredClone(data.tasks.find((item) => item.id === id)!)
+  },
+  async moveTask(id: string, status: TaskStatus, beforeId?: string) {
+    if (id === beforeId) return
+    return this.saveTask(
+      id,
+      { status },
+      { todo: '移至待开始', running: '开始任务', done: '确认完成任务' }[status],
+      beforeId,
+    )
+  },
+  async initializeSdd(requirementId: string) {
+    const previous = projects.find((p) => p.requirements.some((r) => r.id === requirementId))
+    if (!previous) throw new Error('请选择需求。')
+    const next = structuredClone(previous)
+    const requirement = next.requirements.find((r) => r.id === requirementId)!
+    requirement.tasks = addSddTasks(requirement.tasks)
     await saveProjectFile(next, previous)
   },
   async command(_taskId: string, _agentId: string, _command: string) {
     throw new Error('任务终端尚未连接，请在 Agent 对话中发送消息。')
   },
-  async createTask(requirementId: string, title: string, status: TaskStatus) {
+  async createTask(requirementId: string, title: string, status: TaskStatus, type?: TaskType) {
     const previous = projects.find((p) => p.requirements.some((r) => r.id === requirementId))
     if (!previous) throw new Error('请先选择或创建需求。')
     if (!title.trim()) throw new Error('请输入任务名称。')
     const next = structuredClone(previous)
-    next.requirements
-      .find((r) => r.id === requirementId)!
-      .tasks.push({ id: crypto.randomUUID(), title: title.trim(), status })
+    const requirement = next.requirements.find((r) => r.id === requirementId)!
+    if (type && requirement.tasks.some((task) => task.type === type))
+      throw new Error('这个需求已经有同类型的阶段任务。')
+    const predecessor =
+      type && type !== 'spec'
+        ? requirement.tasks.find((task) => task.type === taskTypes[taskTypes.indexOf(type) - 1])
+        : undefined
+    if (type && type !== 'spec' && !predecessor)
+      throw new Error('请先创建前置阶段，或使用“初始化 SDD”。')
+    if (type && status !== 'todo') throw new Error('阶段任务需要从待开始创建。')
+    requirement.tasks.push({
+      id: crypto.randomUUID(),
+      title: title.trim(),
+      status,
+      ...(type ? { type, depends_on: predecessor ? [predecessor.id] : [] } : {}),
+    })
     await saveProjectFile(next, previous)
   },
   async saveProject(input: {
@@ -216,7 +293,7 @@ export const reinService = {
       id,
       title: input.name.trim(),
       description: input.description.trim(),
-      tasks: existing?.tasks ?? [],
+      tasks: existing?.tasks ?? addSddTasks([]),
     }
     if (existing) next.requirements = next.requirements.map((r) => (r.id === id ? value : r))
     else next.requirements.push(value)

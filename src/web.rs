@@ -76,7 +76,7 @@ pub fn router(local: LocalRuntime, origin: String, stop: CancellationToken) -> R
         .route("/api/runs/{id}/reply", post(reply))
         .route("/api/projects", get(projects).post(save_project))
         .fallback(asset)
-        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), same_origin))
         .with_state(state)
 }

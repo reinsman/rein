@@ -96,13 +96,7 @@ pub struct Requirement {
     #[serde(default)]
     pub tasks: Vec<Task>,
 }
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Task {
-    pub id: String,
-    pub title: String,
-    pub status: TaskStatus,
-}
+pub use crate::sdd::Task;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -644,6 +638,11 @@ impl LocalRuntime {
         );
         let mut ids = std::collections::HashSet::new();
         for requirement in &project.requirements {
+            let old_tasks = current
+                .as_ref()
+                .and_then(|p| p.requirements.iter().find(|r| r.id == requirement.id))
+                .map_or(&[][..], |r| r.tasks.as_slice());
+            crate::sdd::validate(&requirement.tasks, old_tasks)?;
             ensure!(
                 !requirement.title.trim().is_empty()
                     && requirement.title.len() <= 240
