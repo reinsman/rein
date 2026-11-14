@@ -327,6 +327,7 @@ export default function App() {
         task={data.tasks.find((t) => t.id === selectedTask)}
         expanded={expanded}
         defaultWidth={detailDefaultWidth}
+        todoWidth={mobile ? viewportWidth : workspaceWidth - chatWidth}
         widthRatio={detailWidthRatio}
         onWidthRatioChange={(ratio) => {
           setDetailWidthRatio(ratio)

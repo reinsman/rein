@@ -31,6 +31,7 @@ interface Props {
   task: Task | undefined
   expanded: boolean
   defaultWidth: number
+  todoWidth: number
   widthRatio: number | null
   onWidthRatioChange: (ratio: number) => void
   availableLeft: number
@@ -44,6 +45,7 @@ export function TaskDetails({
   task,
   expanded,
   defaultWidth,
+  todoWidth,
   widthRatio,
   onWidthRatioChange,
   availableLeft,
@@ -67,14 +69,29 @@ export function TaskDetails({
   const [viewportWidth, setViewportWidth] = useState(window.innerWidth)
   const [resizing, setResizing] = useState(false)
   const [dockedToSidebar, setDockedToSidebar] = useState(false)
+  const [snappedToTodo, setSnappedToTodo] = useState(false)
+  const [returning, setReturning] = useState(false)
   const maximumWidth = Math.max(0, viewportWidth - availableLeft)
+  const todoSnapWidth = Math.min(todoWidth, maximumWidth)
   const preferredWidth = widthRatio === null ? defaultWidth : widthRatio * viewportWidth
   // Clamp only the rendered size: a smaller window must not overwrite the saved ratio.
-  const normalWidth = dockedToSidebar
-    ? maximumWidth
-    : Math.max(Math.min(260, maximumWidth), Math.min(preferredWidth, maximumWidth))
+  const normalWidth = snappedToTodo
+    ? todoSnapWidth
+    : dockedToSidebar
+      ? maximumWidth
+      : Math.max(Math.min(260, maximumWidth), Math.min(preferredWidth, maximumWidth))
   const minimumWidth = Math.min(360, defaultWidth, normalWidth, maximumWidth)
   const renderedWidth = expanded ? maximumWidth : normalWidth
+  const restoringCustom = !expanded && snappedToTodo && returning
+  const restoringTodo = expanded || renderedWidth >= maximumWidth - 1
+  const coversTodo = renderedWidth >= todoSnapWidth - 1
+  const widthActionLabel = restoringCustom
+    ? '恢复自定义宽度'
+    : restoringTodo
+      ? '缩回 Todo 栏'
+      : coversTodo
+        ? '覆盖群聊栏'
+        : '覆盖 Todo 栏'
   const previousLayout = useRef({ availableLeft, viewportWidth, maximumWidth, normalWidth })
   const detailRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
@@ -205,9 +222,26 @@ export function TaskDetails({
   }
   function resize(nextWidth: number) {
     const next = Math.max(minimumWidth, Math.min(maximumWidth, nextWidth))
+    setSnappedToTodo(false)
+    setReturning(false)
     setDockedToSidebar(false)
     onWidthRatioChange(next / viewportWidth)
     if (expanded) onExpand()
+  }
+  function cycleWidth() {
+    setDockedToSidebar(false)
+    // Snap widths never replace the saved custom drag position.
+    if (restoringCustom) {
+      setSnappedToTodo(false)
+      setReturning(false)
+    } else if (restoringTodo) {
+      if (expanded) onExpand()
+      setSnappedToTodo(true)
+      setReturning(true)
+    } else if (!coversTodo) {
+      setSnappedToTodo(true)
+      setReturning(false)
+    } else onExpand()
   }
   return (
     <>
@@ -240,13 +274,18 @@ export function TaskDetails({
             className="detail-resize-handle"
             role="separator"
             aria-label="调整任务详情宽度"
+            title="双击依次覆盖 Todo、群聊，再逐级恢复；也可按 Enter"
             aria-orientation="vertical"
             aria-valuemin={Math.round(minimumWidth)}
             aria-valuemax={maximumWidth}
             aria-valuenow={Math.round(renderedWidth)}
             tabIndex={0}
+            onDoubleClick={cycleWidth}
             onKeyDown={(event) => {
-              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                cycleWidth()
+              } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
                 event.preventDefault()
                 resize(renderedWidth + (event.key === 'ArrowLeft' ? 24 : -24))
               }
@@ -276,11 +315,7 @@ export function TaskDetails({
             <small>{task.displayId ?? taskNumber(task)}</small>
             <h2>{task.title}</h2>
             <span className="spacer" />
-            <Action
-              label={expanded ? '恢复抽屉宽度' : '展开任务详情'}
-              icon="expand"
-              onClick={onExpand}
-            />
+            <Action label={widthActionLabel} icon="expand" onClick={cycleWidth} />
             <Action label="关闭任务详情" icon="close" onClick={requestClose} />
           </header>
           <div className="detail-participants sdd-participants">
