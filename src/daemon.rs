@@ -94,6 +94,7 @@ async fn serve(path: PathBuf, lock: std::fs::File) -> Result<()> {
     let socket = SocketGuard(path);
     let store = crate::store::LocalStore::open(crate::runtime_dir()?.join("reind.sqlite")).await?;
     let local = crate::local::LocalRuntime::new(crate::runtime_dir()?, store).await?;
+    let workflow = crate::workflow::Workflow::new(local.clone()).await?;
     let http = tokio::net::TcpListener::bind(crate::web::listen_address()?).await?;
     let console_url = format!("http://{}", http.local_addr()?);
     let state = Arc::new(State {
@@ -102,7 +103,14 @@ async fn serve(path: PathBuf, lock: std::fs::File) -> Result<()> {
     });
     let http_stop = tokio_util::sync::CancellationToken::new();
     let stop_signal = http_stop.clone();
-    let router = crate::web::router(state.local.clone(), console_url.clone(), http_stop.clone());
+    let tasks = workflow.spawn_tasks(http_stop.clone());
+    let specs = workflow.spawn_specs(http_stop.clone());
+    let router = crate::web::router(
+        state.local.clone(),
+        workflow,
+        console_url.clone(),
+        http_stop.clone(),
+    );
     let web = tokio::spawn(async move {
         axum::serve(http, router)
             .with_graceful_shutdown(stop_signal.cancelled_owned())
@@ -140,6 +148,8 @@ async fn serve(path: PathBuf, lock: std::fs::File) -> Result<()> {
     eprintln!("reind: daemon stopping; cleaning up active executions");
     drop(listener);
     http_stop.cancel();
+    tasks.await?;
+    specs.await?;
     state.local.shutdown().await;
     web.await??;
     drop(lock);

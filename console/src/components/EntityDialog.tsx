@@ -13,9 +13,10 @@ import {
 import type { Project, Requirement } from '../types'
 import { reinService } from '../services/reinService'
 import { Action, Icon } from './shared'
+import { workflowService } from '../services/workflow'
 
 export interface EntityEditor {
-  kind: 'project' | 'requirement'
+  kind: 'project' | 'requirement' | 'spec'
   project?: Project
   requirement?: Requirement
   projectId?: string
@@ -28,15 +29,19 @@ export function EntityDialog({
   editor: EntityEditor
   onClose: () => void
   onSaved: (result: {
-    kind: 'project' | 'requirement'
+    kind: 'project' | 'requirement' | 'spec'
     id: string
     projectId: string
     name: string
   }) => void
 }) {
-  const [name, setName] = useState(editor.project?.name ?? editor.requirement?.title ?? '')
+  const [name, setName] = useState(
+    editor.kind === 'spec' ? '' : (editor.project?.name ?? editor.requirement?.title ?? ''),
+  )
   const [description, setDescription] = useState(
-    editor.project?.description ?? editor.requirement?.description ?? '',
+    editor.kind === 'spec'
+      ? ''
+      : (editor.project?.description ?? editor.requirement?.description ?? ''),
   )
   const [directories, setDirectories] = useState(editor.project?.directories ?? [])
   const [preferred, setPreferred] = useState(() =>
@@ -49,8 +54,8 @@ export function EntityDialog({
   const [saving, setSaving] = useState(false)
   const fieldId = useId()
   const project = editor.kind === 'project'
-  const editing = !!(editor.project || editor.requirement)
-  const title = `${editing ? '编辑' : '新建'}${project ? '项目' : '需求'}`
+  const editing = editor.kind !== 'spec' && !!(editor.project || editor.requirement)
+  const title = `${editing ? '编辑' : '新建'}${project ? '项目' : editor.kind === 'spec' ? 'Spec' : '需求'}`
   return (
     <Dialog
       open
@@ -66,7 +71,15 @@ export function EntityDialog({
           setSaving(true)
           setError('')
           try {
-            if (project) {
+            if (editor.kind === 'spec') {
+              const { spec } = await workflowService.createSpec(
+                editor.requirement!.id,
+                name,
+                description,
+              )
+              await reinService.refreshWorkflow()
+              onSaved({ kind: 'spec', id: spec.id, projectId: editor.projectId!, name: spec.title })
+            } else if (project) {
               const result = await reinService.saveProject({
                 id: editor.project?.id,
                 name,
@@ -101,7 +114,9 @@ export function EntityDialog({
         </DialogTitle>
         <DialogContent className="entity-fields">
           <div className="entity-field">
-            <label htmlFor={`${fieldId}-name`}>{project ? '项目名称' : '需求名称'}</label>
+            <label htmlFor={`${fieldId}-name`}>
+              {project ? '项目名称' : editor.kind === 'spec' ? 'Spec 名称' : '需求名称'}
+            </label>
             <TextField
               id={`${fieldId}-name`}
               placeholder={project ? '输入项目名称' : '输入需求名称'}

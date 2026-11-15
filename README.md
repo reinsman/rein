@@ -114,13 +114,35 @@ Agent 配置示例：
 
 项目可关联多个已存在的本机绝对路径工作目录，保留添加顺序；首个目录默认为首选，也可在编辑项目时切换首选。配置保存在项目 JSON 的 `directories` 和 `preferred_directory` 字段，旧项目无需迁移。项目列表只在页面加载、创建和编辑项目后读取，不参与 Agent 状态轮询。
 
-Console 直接管理项目、需求及任务状态；只有独立 Agent 对话，没有工作空间或项目群聊。任务看板是本地规划，不会自动启动 Agent。Agent 对话支持 Markdown、工具详情、公开思考摘要、审批/输入、会话切换、历史分页、实时事件和停止执行。没有模拟消息或演示数据回退。
+Console 管理项目、需求、Spec 和 Todo。需求页显示该需求的全部任务；左侧需求的编辑按钮旁可新建 Spec。每份 Spec 使用 Waypoints 节点图标和独立的主 Agent 会话，中间标题为“需求名称 - Spec 名称”，右侧显示需求、设计、任务、验证四个页签。Agent 对话沿用 Markdown、折叠执行过程、原生审批/输入、历史和停止执行，没有模拟消息回退。
 
-需求页沿用 Todo 的“待开始／进行中／已完成”三列。新建需求时自动创建 Spec、Design、Tasks、验证四张阶段任务卡；旧需求可点击“初始化 SDD”补齐，已有普通任务保留。阶段按前置依赖解锁，拖动或菜单操作也会检查顺序和完成条件。
+先在头像菜单 → 设置 → 执行环境中选择主 Agent、Coding Agent 和 Review Agent，并用 `rein agent up <name>` 将 Agent 上线。Coding 与 Review 名单互斥；主 Agent 可以兼任，但忙碌时不会同时领取任务。开启自动领取后，空闲 Agent 按角色领取待开始任务；关闭后可手动开始。需求对话支持“添加任务：任务内容”直接创建 Coding 任务，普通讨论中主 Agent 也会按提示通过本机 API 添加任务。直接任务不强制归属 Spec。
 
-点开卡片使用可拖宽、展开／恢复的浮动任务抽屉：Spec 编辑需求文档和验收标准，Design 编辑技术设计，Tasks 管理开发子任务，验证逐项填写结果及证据。文档支持 Markdown 预览，草稿、负责人、子任务和验收记录保存在项目 JSON 中，关闭未保存草稿前会提示。Spec、Design 需要确认文档；Tasks 需要完成全部子任务；验收需要每项通过且有证据。重新打开上游任务会将后续阶段移回待开始，并重置验收结果，保留证据供复核。
+### Spec 与任务运行时
 
-本版 SDD 页面由用户手动推进和确认，分配负责人不会自动调用 Agent 或运行测试；工作记录只展示实际保存、开始、确认和重新打开操作，最多保留最近 200 条。
+Spec 工作流（`src/workflow/spec_runtime.rs`）负责 SDD 阶段及顺序提交；Todo 运行时（`task_runtime.rs`）只负责角色分配、执行、停止、结果和交接校验。二者共享 SQLite 的 `workflow_state`，任务只存一份，Spec 列表和需求 Todo 是不同范围的视图。项目配置仍保存在 JSON 中，旧普通任务和旧阶段卡不会被删除或自动执行。
+
+1. 审阅并确认需求、设计后，点击“开始构建”：只把第一个 Coding 任务放入需求 Todo 的待开始。它完成后再提交下一项；暂不进行 DAG 编排。
+2. 所有开发任务完成后，用户可“提交验证”。每条验收标准生成一项 Review 任务，也逐项进入待开始。
+3. 验收未通过时，Review Agent 在结果中分析责任任务。关联成功则将原 Coding 任务退回待开始并附加返修 handoff；找不到同一 Spec 中的关联任务则创建新的修复任务。
+4. 修复完成后自动开始下一轮验收，重新检查全部验收标准。全部通过后由用户“完成验证”。历史 Review 任务和每轮交接仍保留。
+
+单个任务或整个 Spec 可停止。暂停流程会取消正在执行的关联任务；继续流程恢复正常排队。进程失败、缺失/非法结果、异常重启会将任务保留在待开始并暂停，须显式重试，不会自动反复执行。任务详情保留原浮动 Drawer、拖宽、双击逐级覆盖、右上角同逻辑切换、草稿保护和焦点返回；工作记录接入真实执行事件及原生审批。
+
+每份 Spec 的产物位于 `~/.reind/specs/YYYYMMDDHHmm-UUID/`（本机时间；设置 `REIND_HOME` 时跟随该目录）。`requirements.md`、`design.md`、`tasks.md` 与 handoff 文件在同一目录。当前假设已安装 `rein-spec` skill，主 Agent 提示词会说明完整写作和审批规则，并要求同步生成供程序读取的 `plan.json`：
+
+```json
+{
+  "criteria": [{ "id": "AC-01", "text": "可验证的预期行为" }],
+  "tasks": [{ "id": "T-01", "title": "开发任务", "description": "实现范围", "acceptance_ids": ["AC-01"] }]
+}
+```
+
+ID 必须稳定、唯一，任务数组顺序即执行顺序。程序在开始构建时固定清单和验收标准，已确认的条目不能在后续阶段悄悄替换。文档可手动编辑，保存会检查是否被其他页面或 Agent 改动；离开未保存草稿前会提示。
+
+每次 Coding/Review 执行使用独立会话，提示中给出精确产物路径：`task-UUID-aN-coding-handoff.md` 或 `task-UUID-aN-review-handoff.md`，建议约 100–300 字，记录修改、检查、证据和遗留事项；旁边的同名前缀 `result.json` 必须包含 `outcome`（`passed` / `failed`）、`summary`、`evidence`，Review 可另给 `responsible_task_id`（Coding 任务 UUID 或该 Spec 的计划 ID，无法关联则为 `null`）。CLI 正常退出且这些产物有效才算任务完成。`task-index.json` 提供任务 UUID 与交接文件索引，返修说明另存为 `task-UUID-repair-rN-REVIEW_UUID.md`；任务卡下可查看 Coding、Review 和返修交接。直接任务产物放在 `~/.reind/tasks/UUID/`。
+
+执行器复用现有原生/A2A 通道；自动编排要求执行端能访问这些本机产物路径，未返回有效文件的执行不会误报完成。不会代装 skill 或自动批准 CLI 的权限请求。
 
 Pi 和 Codex 入口分别在 `src/agents/pi.rs`、`src/agents/codex.rs`，原生协议复用 `a2alinker::native`。保持原生认证、技能、扩展和审批策略，不自动批准交互。同一目录最多一个原生执行，全局最多四个执行，同一 Agent 串行。
 

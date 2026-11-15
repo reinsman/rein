@@ -12,6 +12,7 @@ import {
 import { Action, AgentAvatar, Icon } from './shared'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { workflowService, type Spec, type Conversation } from '../services/workflow'
 
 type LoadedRun = RunUpdate
 type Interaction = NonNullable<AgentEvent['interaction']>
@@ -34,14 +35,25 @@ export function AgentChat({
   agent,
   userName,
   sendMode,
+  spec,
+  conversation,
+  title,
+  onSettings,
 }: {
   agent: Agent
   userName: string
   sendMode: string
+  spec?: Spec
+  conversation?: Conversation
+  title?: string
+  onSettings?: () => void
 }) {
+  const contextId = spec?.id ?? conversation?.id ?? ''
   const [records, setRecords] = useState<LoadedRun[]>([])
   const cache = useRef(new Map<string, LoadedRun>())
-  const [session, setSession] = useState(() => savedSession(agent.id))
+  const [session, setSession] = useState(
+    () => spec?.session_id ?? conversation?.session_id ?? savedSession(agent.id),
+  )
   const sessionRef = useRef(session)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState('')
@@ -86,7 +98,7 @@ export function AgentChat({
   function chooseSession(value: string, fetchHistory = true) {
     sessionRef.current = value
     setSession(value)
-    persistSession(agent.id, value)
+    if (!contextId) persistSession(agent.id, value)
     followBottom.current = true
     setHasMore(!!cursors.current.get(value))
     if (fetchHistory) {
@@ -182,7 +194,7 @@ export function AgentChat({
         if (!freshSession.current || requestedSession) {
           sessionRef.current = page.session_id
           setSession(page.session_id)
-          persistSession(agent.id, page.session_id)
+          if (!contextId) persistSession(agent.id, page.session_id)
           setHasMore(!!page.next_cursor)
         }
         publishRecords()
@@ -218,7 +230,7 @@ export function AgentChat({
       loadHistory.current = async () => {}
       cancelHistory.current = () => {}
     }
-  }, [agent.id])
+  }, [agent.id, contextId])
   const visible = records.filter((record) => record.run.sessionId === session)
   const active = visible.find((record) => !terminalRun(record.run))
   useLayoutEffect(() => {
@@ -243,12 +255,15 @@ export function AgentChat({
     setSending(true)
     setError('')
     try {
-      const response = await localService.create(
-        agent.id,
-        session,
-        draft.trim(),
-        sendRequest.current.id,
-      )
+      const response = conversation
+        ? await workflowService.requirementChat(
+            conversation.requirement_id,
+            draft.trim(),
+            sendRequest.current.id,
+          )
+        : spec
+          ? await workflowService.chat(spec.id, draft.trim(), sendRequest.current.id)
+          : await localService.create(agent.id, session, draft.trim(), sendRequest.current.id)
       const record = cache.current.get(response.run.id) || {
         version: '0',
         run: response.run,
@@ -290,44 +305,60 @@ export function AgentChat({
   return (
     <section className="chat-panel" aria-label="Agent 对话">
       <header className="panel-header chat-header">
-        <AgentAvatar agent={agent} size={24} />
+        {conversation ? <Icon name="people" size={24} /> : <AgentAvatar agent={agent} size={24} />}
         <div className="chat-heading">
-          <h1>{agent.name}</h1>
+          <h1>{title ?? agent.name}</h1>
           <span>
-            {agent.backend === 'native' ? `${agent.cli} · 原生` : 'A2A'} ·{' '}
-            {agent.disabled ? 'Agent 已下线' : agent.online ? '在线' : 'reind 离线'}
+            {conversation
+              ? `需求讨论 · ${agent.name}`
+              : spec
+                ? `主 Agent · ${agent.name}`
+                : agent.backend === 'native'
+                  ? `${agent.cli} · 原生`
+                  : 'A2A'}{' '}
+            · {agent.disabled ? 'Agent 已下线' : agent.online ? '在线' : 'reind 离线'}
           </span>
         </div>
         <span className="spacer" />
-        <Button
-          size="small"
-          onClick={() => {
-            freshSession.current = true
-            chooseSession('')
-            setDraft('')
-          }}
-        >
-          新对话
-        </Button>
+        {contextId ? (
+          <Action
+            label={conversation ? '需求配置' : 'Spec 配置'}
+            icon="settings"
+            onClick={() => onSettings?.()}
+          />
+        ) : (
+          <Button
+            size="small"
+            onClick={() => {
+              freshSession.current = true
+              chooseSession('')
+              setDraft('')
+            }}
+          >
+            新对话
+          </Button>
+        )}
       </header>
-      <div className="hub-session-bar">
-        <label htmlFor={`session-${agent.id}`}>会话</label>
-        <select
-          id={`session-${agent.id}`}
-          value={session}
-          onChange={(event) => {
-            freshSession.current = !event.target.value
-            chooseSession(event.target.value)
-          }}
-        >
-          <option value="">新会话</option>
-          {sessions.map((record) => (
-            <option key={record.id} value={record.id}>
-              {record.prompt.slice(0, 48)}
-            </option>
-          ))}
-        </select>
-      </div>
+      {!contextId && (
+        <div className="hub-session-bar">
+          <label htmlFor={`session-${agent.id}`}>会话</label>
+          <select
+            id={`session-${agent.id}`}
+            value={session}
+            onChange={(event) => {
+              freshSession.current = !event.target.value
+              chooseSession(event.target.value)
+            }}
+          >
+            <option value="">新会话</option>
+            {sessions.map((record) => (
+              <option key={record.id} value={record.id}>
+                {record.prompt.slice(0, 48)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {(error || pollError) && (
         <Alert
           severity="error"
@@ -385,7 +416,19 @@ export function AgentChat({
           </div>
         )}
         {visible.map((record) => (
-          <RunMessages key={record.run.id} record={record} agent={agent} userName={userName} />
+          <RunMessages
+            key={record.run.id}
+            record={
+              contextId
+                ? {
+                    ...record,
+                    prompt: record.prompt.split('\nUSER MESSAGE:\n').pop() ?? record.prompt,
+                  }
+                : record
+            }
+            agent={agent}
+            userName={userName}
+          />
         ))}
       </div>
       <div className="composer-dock">
@@ -458,7 +501,7 @@ export function AgentChat({
   )
 }
 
-function RunMessages({
+export function RunMessages({
   record,
   agent,
   userName,

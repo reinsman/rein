@@ -1,5 +1,6 @@
 import type { Task, TaskType } from '../localTypes'
 
+// Legacy stage cards remain editable; new Specs use the workflow runtime.
 export const taskTypes: TaskType[] = ['spec', 'design', 'tasks', 'verification']
 export const taskTypeInfo: Record<
   TaskType,
@@ -25,23 +26,6 @@ export const taskTypeInfo: Record<
 export const taskNumber = (task: Task) =>
   task.type ? `T-0${taskTypes.indexOf(task.type) + 1}` : `T-${task.id.slice(0, 8)}`
 
-export function addSddTasks(existing: Task[]): Task[] {
-  const tasks = structuredClone(existing)
-  for (const [index, type] of taskTypes.entries()) {
-    if (tasks.some((task) => task.type === type)) continue
-    const predecessor =
-      index > 0 ? tasks.find((task) => task.type === taskTypes[index - 1]) : undefined
-    tasks.push({
-      id: crypto.randomUUID(),
-      title: taskTypeInfo[type].title,
-      type,
-      status: 'todo',
-      depends_on: predecessor ? [predecessor.id] : [],
-      history: [{ at: Date.now(), message: '创建阶段任务' }],
-    })
-  }
-  return tasks
-}
 export function predecessors(task: Task, tasks: Task[]) {
   return (task.depends_on ?? [])
     .map((id) => tasks.find((value) => value.id === id))

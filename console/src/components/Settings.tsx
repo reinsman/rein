@@ -13,6 +13,7 @@ import type { ReactNode } from 'react'
 import type { Preferences } from '../services/preferences'
 import { reinService } from '../services/reinService'
 import { Action, Icon } from './shared'
+import { WorkflowSettings } from './WorkflowSettings'
 
 const categories = [
   { name: '通用', icon: 'tune', description: '偏好设置适用于此设备。' },
@@ -197,23 +198,7 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
               )}
               {category === 2 && (
                 <>
-                  <Row label="执行器" description="本机后台运行服务。">
-                    <span className="muted">模拟状态 · Local</span>
-                  </Row>
-                  <Row label="最大并发任务" description="同时执行的任务数上限。">
-                    {select('concurrency', '最大并发任务', [
-                      '1 个任务',
-                      '2 个任务',
-                      '3 个任务',
-                      '5 个任务',
-                    ])}
-                  </Row>
-                  <Row label="关闭页面后继续运行" description="后台运行偏好，接入执行服务后生效。">
-                    {toggle('background', '关闭页面后继续运行')}
-                  </Row>
-                  <Row label="隔离任务工作目录" description="代码任务使用独立工作目录。">
-                    {toggle('isolation', '隔离任务工作目录')}
-                  </Row>
+                  <WorkflowSettings notify={notify} />
                   <Row label="默认终端" description="用于显示 Agent CLI 的字体。">
                     {select('terminal', '默认终端', [
                       'JetBrains Mono · 12 px',
@@ -280,7 +265,13 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
             </div>
             <div className="settings-status" role="status">
               <Icon name="save" size={14} />
-              <span>{category === 1 ? '连接状态为前端模拟，未连接本机服务' : status}</span>
+              <span>
+                {category === 1
+                  ? '连接状态为前端模拟，未连接本机服务'
+                  : category === 2
+                    ? '角色配置需点击保存'
+                    : status}
+              </span>
             </div>
           </section>
         </div>

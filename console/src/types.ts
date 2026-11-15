@@ -64,6 +64,7 @@ export interface AgentConfiguration {
   }
 }
 export interface Task extends StoredTask {
+  queue?: import('./services/workflow').QueueTask
   displayId?: string
   requirementId: string
   agentId: string
@@ -95,6 +96,7 @@ export interface Session {
   activities: { time: string; text: string }[]
 }
 export interface ChatScope {
+  specId?: string
   id: string
   title: string
   label: string
@@ -104,6 +106,8 @@ export interface ChatScope {
   status?: TaskStatus
 }
 export interface AppData {
+  workflow?: import('./services/workflow').WorkflowSnapshot
+  workflowError?: string
   projectError?: string
   agentLoading?: boolean
   agentError?: string

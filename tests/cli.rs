@@ -10,6 +10,46 @@ use tempfile::TempDir;
 use uuid::Uuid;
 struct Harness(TempDir);
 impl Harness {
+    fn sql(&self, statement: &str) {
+        use sqlx::Connection;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut connection = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(self.0.path().join("reind.sqlite")),
+            )
+            .await
+            .unwrap();
+            sqlx::query(statement)
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+        });
+    }
+    fn workflow_agent(&self, provider: &str, name: &str) {
+        self.add_native(provider, name);
+        let path = self.0.path().join("agents").join(format!("{name}.json"));
+        let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        config["executable"] = json!(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/workflow_agent.py")
+        );
+        std::fs::write(path, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
+    fn workflow(&self) -> Value {
+        self.api("GET", "/api/workflow", Value::Null)
+    }
+    fn wait_workflow(&self, predicate: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let state = self.workflow();
+            if predicate(&state) {
+                return state;
+            }
+            assert!(Instant::now() < deadline, "workflow timeout: {state}");
+            thread::sleep(Duration::from_millis(80));
+        }
+    }
     fn new() -> Self {
         Self(tempfile::tempdir().unwrap())
     }
@@ -167,6 +207,411 @@ impl Drop for Harness {
     fn drop(&mut self) {
         let _ = self.run(&["daemon", "stop"]);
     }
+}
+
+fn planned_spec(h: &Harness) -> (String, std::path::PathBuf) {
+    let project = Uuid::new_v4().to_string();
+    let requirement = Uuid::new_v4().to_string();
+    h.api("POST","/api/projects",json!({"previous":null,"project":{"id":project,"name":"Runtime project","description":"","directories":[h.0.path()],"preferred_directory":h.0.path(),"requirements":[{"id":requirement,"title":"Runtime requirement","description":"","tasks":[]}]}}));
+    let spec=h.api("POST","/api/specs",json!({"requirement_id":requirement,"title":"Spec runtime","description":"Sequential implementation and acceptance"}))["spec"].clone();
+    let id = spec["id"].as_str().unwrap().to_string();
+    let directory =
+        h.0.path()
+            .join("specs")
+            .join(spec["directory"].as_str().unwrap());
+    assert_eq!(
+        spec["directory"]
+            .as_str()
+            .unwrap()
+            .split('-')
+            .next()
+            .unwrap()
+            .len(),
+        12
+    );
+    let plan = json!({"criteria":[{"id":"AC-01","text":"First behaviour passes"},{"id":"AC-02","text":"Second behaviour passes"}],"tasks":[{"id":"T-01","title":"First coding task","description":"Implement behaviour one","acceptance_ids":["AC-01"]},{"id":"T-02","title":"Second coding task","description":"Implement behaviour two","acceptance_ids":["AC-02"]}]});
+    for (file, content) in [
+        (
+            "requirements.md",
+            "# Requirements\nExpected behaviour".into(),
+        ),
+        ("design.md", "# Design\nTechnical constraints".into()),
+        (
+            "tasks.md",
+            "- [ ] T-01 First task\n- [ ] T-02 Second task".into(),
+        ),
+        ("plan.json", serde_json::to_string(&plan).unwrap()),
+    ] {
+        h.api(
+            "POST",
+            &format!("/api/artifacts/{id}/{file}"),
+            json!({"content":content}),
+        );
+    }
+    for action in ["approve_requirements", "approve_design"] {
+        h.api(
+            "POST",
+            &format!("/api/specs/{id}/action"),
+            json!({"action":action}),
+        );
+    }
+    (id, directory)
+}
+
+#[test]
+fn workflow_roles_sequence_handoffs_and_responsible_task_repair() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    h.workflow_agent("codex", "reviewer");
+    let (id, directory) = planned_spec(&h);
+    let settings = json!({"main_agent":"coder","coding_agents":["coder"],"review_agents":["reviewer"],"automatic":false});
+    h.api("POST", "/api/workflow/settings", settings.clone());
+    assert_eq!(
+        h.http(
+            "POST",
+            "/api/workflow/settings",
+            json!({"coding_agents":["coder"],"review_agents":["coder"],"automatic":true})
+        )
+        .0,
+        400
+    );
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"build"}),
+    );
+    let state = h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
+    assert_eq!(state["tasks"][0]["status"], "todo");
+    assert!(state["tasks"][0]["agent_id"].is_null());
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/specs/{id}/action"),
+            json!({"action":"build"})
+        )
+        .0,
+        400
+    );
+    let mut enabled = settings;
+    enabled["automatic"] = json!(true);
+    h.api("POST", "/api/workflow/settings", enabled);
+    let built = h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_verification");
+    assert_eq!(built["tasks"].as_array().unwrap().len(), 2);
+    assert!(
+        built["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["status"] == "done" && t["agent_id"] == "coder")
+    );
+    let first_id = built["tasks"][0]["id"].clone();
+    std::fs::write(directory.join("review-fail-once"), "").unwrap();
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"submit_verification"}),
+    );
+    let checked = h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_complete");
+    let tasks = checked["tasks"].as_array().unwrap();
+    let coding: Vec<_> = tasks.iter().filter(|t| t["role"] == "coding").collect();
+    assert_eq!(coding.len(), 2);
+    let repaired = coding.iter().find(|t| t["id"] == first_id).unwrap();
+    assert_eq!(repaired["attempt"], 2);
+    assert!(
+        repaired["handoffs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["kind"] == "repair")
+    );
+    assert_eq!(checked["specs"][0]["round"], 2);
+    assert!(
+        tasks
+            .iter()
+            .filter(|t| t["role"] == "review")
+            .all(|t| t["agent_id"] == "reviewer")
+    );
+    for task in tasks {
+        for handoff in task["handoffs"].as_array().unwrap() {
+            assert!(directory.join(handoff["file"].as_str().unwrap()).is_file());
+        }
+    }
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"complete"}),
+    );
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(h.workflow()["specs"][0]["phase"], "complete");
+    assert_eq!(h.workflow()["tasks"].as_array().unwrap().len(), tasks.len());
+}
+
+#[test]
+fn workflow_unlinked_acceptance_failure_creates_one_repair_task() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    h.workflow_agent("codex", "reviewer");
+    let (id, directory) = planned_spec(&h);
+    let plan_path = directory.join("plan.json");
+    let mut plan: Value = serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
+    plan["tasks"][0]["acceptance_ids"] = json!([]);
+    std::fs::write(plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"coding_agents":["coder"],"review_agents":["reviewer"],"automatic":true}),
+    );
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"build"}),
+    );
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_verification");
+    std::fs::write(directory.join("review-fail-unlinked-once"), "").unwrap();
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"submit_verification"}),
+    );
+    let state = h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_complete");
+    let coding: Vec<_> = state["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["role"] == "coding")
+        .collect();
+    assert_eq!(coding.len(), 3);
+    let fix = coding.iter().find(|t| t["plan_id"].is_null()).unwrap();
+    assert_eq!(fix["status"], "done");
+    assert!(
+        fix["handoffs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["kind"] == "repair")
+    );
+}
+
+#[test]
+fn workflow_artifact_conflicts_and_requirement_chat_creation_are_safe() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    let (id, directory) = planned_spec(&h);
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/specs/{id}/action"),
+            json!({"action":"submit_verification"})
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/artifacts/{id}/requirements.md"),
+            json!({"content":"replace confirmed requirements"})
+        )
+        .0,
+        400
+    );
+    let original = h.api("GET", &format!("/api/artifacts/{id}/tasks.md"), Value::Null)["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    std::fs::write(directory.join("tasks.md"), "Agent's newer draft").unwrap();
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/artifacts/{id}/tasks.md"),
+            json!({"content":"stale editor write","previous":original})
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("tasks.md")).unwrap(),
+        "Agent's newer draft"
+    );
+    let outside = h.0.path().join("outside.md");
+    std::fs::write(&outside, "private outside content").unwrap();
+    std::os::unix::fs::symlink(&outside, directory.join("symlink.md")).unwrap();
+    assert_eq!(
+        h.http(
+            "GET",
+            &format!("/api/artifacts/{id}/symlink.md"),
+            Value::Null
+        )
+        .0,
+        400
+    );
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"main_agent":"coder","coding_agents":["coder"],"automatic":false}),
+    );
+    let requirement = h.workflow()["specs"][0]["requirement_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let request = Uuid::new_v4().to_string();
+    let body = json!({"prompt":"添加任务：需求对话中的直接任务","request_id":request});
+    let first = h.api(
+        "POST",
+        &format!("/api/requirements/{requirement}/chat"),
+        body.clone(),
+    );
+    let second = h.api(
+        "POST",
+        &format!("/api/requirements/{requirement}/chat"),
+        body,
+    );
+    assert_eq!(first["run"]["run_id"], second["run"]["run_id"]);
+    h.wait(&first["run"], &["completed"]);
+    let state = h.workflow();
+    assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
+    assert!(state["tasks"][0]["spec_id"].is_null());
+    assert_eq!(state["tasks"][0]["status"], "todo");
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(h.workflow()["conversations"], state["conversations"]);
+}
+
+#[test]
+fn workflow_missing_handoff_manual_retry_pause_and_restart_do_not_skip_work() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    let (id, directory) = planned_spec(&h);
+    std::fs::write(directory.join("missing-handoff-once"), "").unwrap();
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"coding_agents":["coder"],"automatic":true}),
+    );
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"build"}),
+    );
+    let failed = h.wait_workflow(|s| s["tasks"][0]["error"].is_string());
+    assert_eq!(failed["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(failed["tasks"][0]["status"], "todo");
+    h.ok(&["daemon", "restart"]);
+    let state = h.workflow();
+    assert_eq!(state["tasks"][0]["paused"], true);
+    let task = state["tasks"][0]["id"].as_str().unwrap();
+    std::fs::write(directory.join("hold-running"), "").unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task}/action"),
+        json!({"action":"start"}),
+    );
+    h.wait_workflow(|s| s["tasks"][0]["run_id"].is_string());
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"pause"}),
+    );
+    let stopped = h.wait_workflow(|s| s["tasks"][0]["status"] == "todo");
+    assert_eq!(stopped["specs"][0]["paused"], true);
+    assert_eq!(stopped["tasks"].as_array().unwrap().len(), 1);
+    std::fs::remove_file(directory.join("hold-running")).unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task}/action"),
+        json!({"action":"start"}),
+    );
+    h.wait_workflow(|s| s["tasks"][0]["status"] == "done");
+    assert_eq!(h.workflow()["tasks"].as_array().unwrap().len(), 1);
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"resume"}),
+    );
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_verification");
+}
+
+#[test]
+fn workflow_dispatch_artifact_error_returns_to_pending_instead_of_leaving_a_false_running_claim() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    let (id, directory) = planned_spec(&h);
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"coding_agents":["coder"],"automatic":false}),
+    );
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"build"}),
+    );
+    h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
+    let moved = directory.with_extension("moved");
+    std::fs::rename(&directory, &moved).unwrap();
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"coding_agents":["coder"],"automatic":true}),
+    );
+    let state = h.wait_workflow(|s| s["tasks"][0]["error"].is_string());
+    assert_eq!(state["tasks"][0]["status"], "todo");
+    assert_eq!(state["tasks"][0]["paused"], true);
+    assert!(state["tasks"][0]["run_id"].is_null());
+    std::fs::rename(moved, &directory).unwrap();
+    let task = state["tasks"][0]["id"].as_str().unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task}/action"),
+        json!({"action":"start"}),
+    );
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_verification");
+}
+
+#[test]
+fn workflow_stop_finds_execution_even_when_persisting_the_run_link_failed() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    let (id, directory) = planned_spec(&h);
+    std::fs::write(directory.join("hold-running"), "").unwrap();
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"coding_agents":["coder"],"automatic":false}),
+    );
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"build"}),
+    );
+    h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
+    h.sql("CREATE TRIGGER fail_task_link BEFORE UPDATE ON workflow_state WHEN json_type(new.snapshot,'$.tasks[0].run_id')='text' BEGIN SELECT RAISE(ABORT,'injected run-link failure'); END");
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"coding_agents":["coder"],"automatic":true}),
+    );
+    let state = h.wait_workflow(|s| {
+        s["tasks"][0]["request_id"].is_string() && s["tasks"][0]["run_id"].is_null()
+    });
+    let task = state["tasks"][0]["id"].as_str().unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task}/action"),
+        json!({"action":"stop"}),
+    );
+    let run = h.api("GET", "/api/agents/coder/history", Value::Null)["runs"][0]["run"].clone();
+    assert!(run["run_id"].is_string());
+    h.wait(&run, &["cancelled"]);
+    h.sql("DROP TRIGGER fail_task_link");
+    let stopped = h.wait_workflow(|s| s["tasks"][0]["status"] == "todo");
+    assert_eq!(stopped["tasks"][0]["paused"], true);
+    assert_eq!(stopped["tasks"].as_array().unwrap().len(), 1);
 }
 
 #[test]

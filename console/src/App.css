@@ -2924,6 +2924,360 @@ textarea {
   min-width: max-content;
   white-space: nowrap;
 }
+.requirement-row .requirement-edit {
+  right: 32px;
+}
+.requirement-new-spec {
+  position: absolute !important;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.requirement-row .tree-child {
+  padding-right: 60px;
+}
+.spec-tree {
+  margin: 3px 10px 8px 45px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.spec-tree:empty {
+  display: none;
+}
+.spec-tree .MuiListItemButton-root {
+  gap: 8px;
+  font-size: 12px;
+  min-height: 34px;
+  border-radius: 6px;
+}
+.spec-tree .Mui-selected {
+  color: #0866ff;
+}
+.spec-panel {
+  min-height: 0;
+}
+.spec-panel > .panel-header {
+  flex-shrink: 0;
+}
+.spec-phase-status {
+  color: #596273;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.spec-stage-tabs {
+  display: flex;
+  padding: 0 16px;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.spec-stage-tabs button {
+  padding: 13px 10px;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: #596273;
+  cursor: pointer;
+}
+.spec-stage-tabs button[aria-selected='true'] {
+  color: #0866ff;
+  border-bottom-color: #0866ff;
+}
+.spec-document-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--border);
+  color: #596273;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.spec-document-toolbar .MuiButton-root {
+  min-width: auto;
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.spec-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+}
+.spec-panel-body > .MuiAlert-root {
+  margin-bottom: 16px;
+}
+.spec-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 50px 8px;
+  color: #596273;
+  text-align: center;
+}
+.spec-empty span {
+  font-size: 12px;
+}
+.spec-plan-editor {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+}
+.spec-progress-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.spec-progress-heading span {
+  color: #596273;
+  font-size: 12px;
+}
+.spec-panel progress {
+  width: 100%;
+  height: 5px;
+  accent-color: #0866ff;
+  border: 0;
+  margin-bottom: 20px;
+}
+.spec-task-item {
+  padding: 15px 0;
+  border-bottom: 1px solid var(--border);
+}
+.spec-task-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.spec-task-main > span:first-child {
+  color: #596273;
+  font-size: 12px;
+}
+.spec-task-main button {
+  border: 0;
+  background: none;
+  color: #202632;
+  text-align: left;
+  padding: 0;
+  flex: 1;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.spec-task-main button:disabled {
+  cursor: default;
+}
+.spec-task-label {
+  font-size: 11px;
+  color: #596273;
+  flex-shrink: 0;
+}
+.spec-task-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 7px;
+}
+.spec-task-item > p {
+  font-size: 12px;
+  color: #596273;
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+}
+.spec-footer {
+  flex-shrink: 0;
+}
+.spec-footer > span {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.spec-footer .detail-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.spec-footer .detail-controls .MuiButton-root {
+  padding: 5px 11px;
+}
+.spec-footer .detail-controls .MuiButton-contained {
+  color: #fff;
+}
+.queue-task-card .task-card-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  height: auto;
+  gap: 4px 6px;
+}
+.queue-task-card .queue-role {
+  grid-row: 1;
+  grid-column: 1;
+}
+.queue-task-card .queue-sdd-mark {
+  grid-row: 1;
+  grid-column: 2;
+}
+.queue-task-card .task-card-meta .MuiIconButton-root {
+  grid-row: 1;
+  grid-column: 3;
+}
+.queue-task-card .task-card-number {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  margin-left: 0;
+}
+.queue-task-card .task-card-meta .needs-reply-badge {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.handoff-links {
+  display: grid;
+  gap: 5px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0 0 0 12px;
+  border-left: 1px solid var(--border);
+}
+.handoff-links button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  border: 0;
+  background: none;
+  color: #596273;
+  padding: 3px 0;
+  text-align: left;
+  font-size: 11px;
+  cursor: pointer;
+}
+.handoff-links button:hover {
+  color: #0866ff;
+}
+.handoff-filename {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  margin-bottom: 18px;
+}
+.queue-role {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #596273;
+  font-size: 11px;
+}
+.queue-sdd-mark {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  color: #5273aa;
+  font-size: 10px;
+}
+.task-card.sdd-task-card {
+  background: #f7faff;
+  border-left: 2px solid #b6cef4;
+}
+.task-card.queue-review {
+  border-left-color: #b4d8cb;
+}
+.queue-review .queue-role {
+  color: #31725a;
+}
+.queue-source {
+  color: #596273;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+}
+.queue-source button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #5273aa;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.queue-error {
+  color: #b33c32;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  margin: 7px 0;
+}
+.queue-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.queue-controls .MuiButton-root {
+  font-size: 11px;
+  min-width: 0;
+  padding: 3px 7px;
+}
+.workflow-settings {
+  display: grid;
+  gap: 15px;
+  padding: 16px 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+.workflow-settings > label,
+.workflow-role-list label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.workflow-settings select {
+  min-width: 180px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 6px;
+}
+.workflow-settings > p {
+  font-size: 12px;
+  margin: 0;
+}
+.workflow-role-list {
+  display: grid;
+  gap: 10px;
+}
+.workflow-settings .workflow-auto {
+  justify-content: flex-start;
+  gap: 8px;
+}
+.workflow-settings > .MuiButton-root {
+  justify-self: end;
+}
+@media (max-width: 599px) {
+  .spec-panel-body {
+    padding: 16px;
+  }
+  .spec-document-toolbar {
+    padding-inline: 16px;
+  }
+  .spec-task-main {
+    flex-wrap: wrap;
+  }
+  .spec-task-main button {
+    min-width: 130px;
+  }
+  .spec-footer .detail-controls {
+    gap: 4px;
+  }
+  .workflow-settings > label,
+  .workflow-role-list label {
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .workflow-settings select {
+    width: 100%;
+  }
+}
 @media (max-width: 599px) {
   .sdd-task-content .MuiInputBase-input {
     font-size: 16px;

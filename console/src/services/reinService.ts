@@ -8,9 +8,10 @@ import type {
   Task,
   TaskStatus,
 } from '../types'
-import type { Project as StoredProject, Task as StoredTask, TaskType } from '../localTypes'
+import type { Project as StoredProject, Task as StoredTask } from '../localTypes'
 import { localService, request } from './localService'
-import { addSddTasks, blockedReason, completionError, taskNumber, taskTypes } from './sdd'
+import { blockedReason, completionError, taskNumber, taskTypes } from './sdd'
+import { workflowService, type QueueRole } from './workflow'
 
 let data: AppData = {
   projects: [],
@@ -64,6 +65,66 @@ function applyProjects(values: StoredProject[]) {
       })),
     ),
   )
+  for (const queue of data.workflow?.tasks ?? []) {
+    const roleAgents =
+      (queue.role === 'coding'
+        ? data.workflow?.settings.coding_agents
+        : data.workflow?.settings.review_agents) ?? []
+    const waiting =
+      roleAgents.length === 0
+        ? `未配置 ${queue.role === 'coding' ? 'Coding' : 'Review'} Agent`
+        : !roleAgents.some((id) => data.agents.some((agent) => agent.id === id && agent.online))
+          ? '等待对应 Agent 上线'
+          : !data.workflow?.settings.automatic && !queue.manual
+            ? '等待手动开始'
+            : '待领取'
+    data.tasks = data.tasks.filter((task) => task.id !== queue.id)
+    data.tasks.push({
+      id: queue.id,
+      title: queue.title,
+      status: queue.status,
+      description: queue.description,
+      agent_id: queue.agent_id ?? '',
+      agentId: queue.agent_id ?? '',
+      requirementId: queue.requirement_id,
+      dependsOn: [],
+      displayId: `T-${queue.id.slice(0, 6)}`,
+      execution:
+        queue.status === 'running'
+          ? ['waiting_input', 'waiting_approval'].includes(queue.execution_state ?? '')
+            ? 'waiting'
+            : 'executing'
+          : queue.status === 'done'
+            ? 'completed'
+            : 'queued',
+      statusText: queue.error
+        ? '执行需处理'
+        : queue.paused
+          ? '已暂停'
+          : queue.status === 'running'
+            ? queue.execution_state === 'waiting_approval'
+              ? '等待审批'
+              : queue.execution_state === 'waiting_input'
+                ? '等待输入'
+                : '执行中'
+            : queue.status === 'done'
+              ? queue.result?.outcome === 'failed'
+                ? '验收未通过'
+                : '已完成'
+              : waiting,
+      queue,
+    })
+  }
+}
+async function refreshWorkflow() {
+  try {
+    data.workflow = await workflowService.snapshot()
+    data.workflowError = undefined
+    applyProjects(projects)
+  } catch (error) {
+    data.workflowError = error instanceof Error ? error.message : '无法读取工作流'
+  }
+  publish()
 }
 async function refreshAgents() {
   if (refresh) return refresh
@@ -113,15 +174,19 @@ export function taskHasActiveAgent(task: Task) {
   return task.execution === 'executing' || task.execution === 'waiting'
 }
 export const reinService = {
+  refreshWorkflow,
   refreshAgents,
   refreshProjects,
   async getData() {
-    await Promise.all([refreshAgents(), refreshProjects()])
+    await Promise.all([refreshAgents(), refreshProjects(), refreshWorkflow()])
     return clone()
   },
   subscribe(fn: (value: AppData) => void) {
     subscribers.add(fn)
-    const timer = window.setInterval(() => void refreshAgents(), 2000)
+    const timer = window.setInterval(() => {
+      void refreshAgents()
+      void refreshWorkflow()
+    }, 2000)
     return () => {
       window.clearInterval(timer)
       subscribers.delete(fn)
@@ -132,8 +197,24 @@ export const reinService = {
       throw new Error('请输入有效邮箱和至少 4 位演示密码。')
     return { name: 'Haibin', mode: 'demo' as const }
   },
-  async sendMessage(_scopeId: string, _content: string) {
-    throw new Error('需求对话尚未连接执行服务，请从左侧选择 Agent 开始对话。')
+  async sendMessage(scopeId: string, content: string) {
+    const requirement = data.requirements.find((r) => r.id === scopeId)
+    if (!requirement) throw new Error('请选择需求。')
+    const task = content.match(/^(?:请)?(?:添加|新建)(?:一个)?任务[：:\s]*([\s\S]+)/)
+    if (task) {
+      await workflowService.createTask(scopeId, task[1].trim().slice(0, 80), content)
+      await refreshWorkflow()
+    } else if (!data.workflow?.settings.main_agent)
+      throw new Error('请在系统配置中设置主 Agent，或使用“添加任务：任务内容”。')
+    else throw new Error('需求页可用“添加任务：任务内容”创建任务；Spec 技术讨论请进入对应 Spec。')
+    data.messages.push({
+      id: crypto.randomUUID(),
+      scopeId,
+      authorId: 'user',
+      time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+      content,
+    })
+    publish()
   },
   async updateTask(id: string, patch: Partial<Pick<Task, 'status' | 'execution' | 'statusText'>>) {
     const task = data.tasks.find((t) => t.id === id)
@@ -143,6 +224,17 @@ export const reinService = {
   async saveTask(id: string, patch: Partial<StoredTask>, action = '保存草稿', beforeId?: string) {
     const task = data.tasks.find((value) => value.id === id)
     if (!task) throw new Error('任务不存在。')
+    if (task.queue) {
+      if (patch.status === 'done')
+        throw new Error('任务完成由 Agent 结果与 handoff 确认，不能手动跳过执行。')
+      await workflowService.taskAction(
+        id,
+        patch.status === 'running' ? 'start' : patch.status === 'todo' ? 'stop' : 'save',
+        { description: patch.description, agent_id: patch.agent_id },
+      )
+      await refreshWorkflow()
+      return structuredClone(data.tasks.find((t) => t.id === id)!)
+    }
     if (taskHasActiveAgent(task)) throw new Error('Agent 会话仍在运行，请先停止任务再修改。')
     const previous = projects.find((p) => p.requirements.some((r) => r.id === task.requirementId))
     if (!previous) throw new Error('所属项目不存在。')
@@ -219,39 +311,15 @@ export const reinService = {
       beforeId,
     )
   },
-  async initializeSdd(requirementId: string) {
-    const previous = projects.find((p) => p.requirements.some((r) => r.id === requirementId))
-    if (!previous) throw new Error('请选择需求。')
-    const next = structuredClone(previous)
-    const requirement = next.requirements.find((r) => r.id === requirementId)!
-    requirement.tasks = addSddTasks(requirement.tasks)
-    await saveProjectFile(next, previous)
-  },
   async command(_taskId: string, _agentId: string, _command: string) {
     throw new Error('任务终端尚未连接，请在 Agent 对话中发送消息。')
   },
-  async createTask(requirementId: string, title: string, status: TaskStatus, type?: TaskType) {
+  async createTask(requirementId: string, title: string, role: QueueRole = 'coding') {
     const previous = projects.find((p) => p.requirements.some((r) => r.id === requirementId))
     if (!previous) throw new Error('请先选择或创建需求。')
     if (!title.trim()) throw new Error('请输入任务名称。')
-    const next = structuredClone(previous)
-    const requirement = next.requirements.find((r) => r.id === requirementId)!
-    if (type && requirement.tasks.some((task) => task.type === type))
-      throw new Error('这个需求已经有同类型的阶段任务。')
-    const predecessor =
-      type && type !== 'spec'
-        ? requirement.tasks.find((task) => task.type === taskTypes[taskTypes.indexOf(type) - 1])
-        : undefined
-    if (type && type !== 'spec' && !predecessor)
-      throw new Error('请先创建前置阶段，或使用“初始化 SDD”。')
-    if (type && status !== 'todo') throw new Error('阶段任务需要从待开始创建。')
-    requirement.tasks.push({
-      id: crypto.randomUUID(),
-      title: title.trim(),
-      status,
-      ...(type ? { type, depends_on: predecessor ? [predecessor.id] : [] } : {}),
-    })
-    await saveProjectFile(next, previous)
+    await workflowService.createTask(requirementId, title, '', role)
+    await refreshWorkflow()
   },
   async saveProject(input: {
     id?: string
@@ -293,7 +361,7 @@ export const reinService = {
       id,
       title: input.name.trim(),
       description: input.description.trim(),
-      tasks: existing?.tasks ?? addSddTasks([]),
+      tasks: existing?.tasks ?? [],
     }
     if (existing) next.requirements = next.requirements.map((r) => (r.id === id ? value : r))
     else next.requirements.push(value)

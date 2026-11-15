@@ -166,6 +166,17 @@ impl LocalRuntime {
         prompt: String,
         request_id: String,
     ) -> Result<LocalRun> {
+        self.start_in_directory(agent_id, session_id, prompt, request_id, None)
+            .await
+    }
+    pub async fn start_in_directory(
+        &self,
+        agent_id: String,
+        session_id: Option<String>,
+        prompt: String,
+        request_id: String,
+        directory: Option<PathBuf>,
+    ) -> Result<LocalRun> {
         let _guard = self.operations.lock().await;
         ensure!(!self.stopping.load(Ordering::SeqCst), "daemon is stopping");
         ensure!(
@@ -193,12 +204,35 @@ impl LocalRuntime {
             );
             return Ok(serde_json::from_str(row.get("snapshot"))?);
         }
-        let config = self.agents.get(&agent_id)?;
+        let mut config = self.agents.get(&agent_id)?;
+        let directory = directory
+            .map(|path| -> Result<PathBuf> {
+                ensure!(
+                    path.is_absolute() && path.is_dir(),
+                    "working directory is unavailable"
+                );
+                Ok(fs::canonicalize(path)?)
+            })
+            .transpose()?;
+        if config.a2a.is_none()
+            && let Some(directory) = &directory
+        {
+            ensure!(
+                directory.is_absolute() && directory.is_dir(),
+                "working directory is unavailable"
+            );
+            config.directory = Some(directory.clone());
+        }
         ensure!(config.enabled, "agent is down; run `rein agent up <name>`");
         self.ensure_idle(&agent_id).await?;
         let mut session_config = config.clone();
         session_config.enabled = true;
-        let configuration = format!("{:x}", Sha256::digest(serde_json::to_vec(&session_config)?));
+        let fingerprint = if config.a2a.is_some() && directory.is_some() {
+            serde_json::to_vec(&json!({"agent":session_config,"directory":directory}))?
+        } else {
+            serde_json::to_vec(&session_config)?
+        };
+        let configuration = format!("{:x}", Sha256::digest(fingerprint));
         let session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         ensure!(
             Uuid::parse_str(&session_id).is_ok(),
@@ -254,10 +288,10 @@ impl LocalRuntime {
             if let Some(options) = &config.a2a {
                 let backend = A2aBackend::new(options.clone(), attempt, context_id);
                 let control = Control::A2a(backend.control_handle());
-                (Box::new(backend), control, None)
+                (Box::new(backend), control, directory)
             } else {
                 let options = config.native_options().resolve()?;
-                let directory = Some(options.agent.workspace.clone());
+                let directory = Some(fs::canonicalize(&options.agent.workspace)?);
                 let mut backend = NativeBackend::new(options);
                 backend.restore_native_id(native_id);
                 backend.prepare(attempt);

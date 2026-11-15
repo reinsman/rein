@@ -3,6 +3,7 @@ import { Button, ButtonBase, InputBase, Menu, MenuItem, Paper, Tooltip } from '@
 import type { AppData, ChatScope } from '../types'
 import { reinService } from '../services/reinService'
 import { AgentChat } from './AgentChat'
+import { workflowService, type Conversation } from '../services/workflow'
 
 import { Action, AgentAvatar, Icon } from './shared'
 
@@ -14,8 +15,40 @@ interface Props {
   notify: (message: string) => void
   sendMode: string
   userName: string
+  onSettings: () => void
 }
-export function Chat({ data, scope, onTask, onMembers, notify, sendMode, userName }: Props) {
+export function Chat({
+  data,
+  scope,
+  onTask,
+  onMembers,
+  notify,
+  sendMode,
+  userName,
+  onSettings,
+}: Props) {
+  const mainAgent = data.agents.find((agent) => agent.id === data.workflow?.settings.main_agent)
+  const mainAgentId = mainAgent?.id
+  const [conversation, setConversation] = useState<Conversation>()
+  const [conversationError, setConversationError] = useState('')
+  useEffect(() => {
+    let disposed = false
+    if (scope.requirementId && mainAgentId)
+      void workflowService
+        .conversation(scope.requirementId)
+        .then((value) => {
+          if (!disposed) {
+            setConversation(value)
+            setConversationError('')
+          }
+        })
+        .catch((error) => {
+          if (!disposed) setConversationError(String(error))
+        })
+    return () => {
+      disposed = true
+    }
+  }, [scope.requirementId, mainAgentId])
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const draft = drafts[scope.id] ?? ''
   const setDraft = (value: string) => setDrafts((prev) => ({ ...prev, [scope.id]: value }))
@@ -71,6 +104,26 @@ export function Chat({ data, scope, onTask, onMembers, notify, sendMode, userNam
         userName={userName}
         sendMode={sendMode}
       />
+    )
+  if (scope.requirementId && mainAgent)
+    return conversation?.requirement_id === scope.requirementId &&
+      conversation.agent_id === mainAgent.id ? (
+      <AgentChat
+        key={`${conversation.id}-${mainAgent.id}`}
+        conversation={conversation}
+        title={scope.title}
+        agent={mainAgent}
+        userName={userName}
+        sendMode={sendMode}
+        onSettings={onSettings}
+      />
+    ) : (
+      <section className="chat-panel">
+        <header className="panel-header">
+          <h1>{scope.title}</h1>
+        </header>
+        <p className="muted">{conversationError || '正在读取需求讨论…'}</p>
+      </section>
     )
   return (
     <section className="chat-panel" aria-label="群聊">

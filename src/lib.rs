@@ -7,6 +7,7 @@ pub mod local;
 mod sdd;
 pub mod store;
 pub mod web;
+pub mod workflow;
 
 use std::env;
 use std::fs;

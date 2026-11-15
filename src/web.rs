@@ -28,6 +28,7 @@ include!(concat!(env!("OUT_DIR"), "/console_assets.rs"));
 #[derive(Clone)]
 struct WebState {
     local: LocalRuntime,
+    workflow: crate::workflow::Workflow,
     origin: String,
     stop: CancellationToken,
 }
@@ -58,9 +59,15 @@ pub fn listen_address() -> Result<SocketAddr> {
     );
     Ok(address)
 }
-pub fn router(local: LocalRuntime, origin: String, stop: CancellationToken) -> Router {
+pub fn router(
+    local: LocalRuntime,
+    workflow: crate::workflow::Workflow,
+    origin: String,
+    stop: CancellationToken,
+) -> Router {
     let state = WebState {
         local,
+        workflow,
         origin,
         stop,
     };
@@ -75,10 +82,142 @@ pub fn router(local: LocalRuntime, origin: String, stop: CancellationToken) -> R
         .route("/api/runs/{id}/cancel", post(cancel))
         .route("/api/runs/{id}/reply", post(reply))
         .route("/api/projects", get(projects).post(save_project))
+        .route("/api/workflow", get(workflow_snapshot))
+        .route("/api/workflow/settings", post(workflow_settings))
+        .route("/api/specs", post(create_spec))
+        .route("/api/specs/{id}/action", post(spec_action))
+        .route("/api/specs/{id}/chat", post(spec_chat))
+        .route(
+            "/api/artifacts/{id}/{name}",
+            get(workflow_file).post(save_workflow_file),
+        )
+        .route("/api/tasks", post(create_task))
+        .route(
+            "/api/requirements/{id}/conversation",
+            get(requirement_conversation),
+        )
+        .route("/api/requirements/{id}/chat", post(requirement_chat))
+        .route("/api/tasks/{id}/action", post(task_action))
         .fallback(asset)
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), same_origin))
         .with_state(state)
+}
+async fn workflow_snapshot(State(s): State<WebState>) -> ApiResult {
+    Ok(Json(json!(s.workflow.snapshot().await)))
+}
+async fn requirement_conversation(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!(s.workflow.conversation(&id).await?)))
+}
+async fn requirement_chat(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<SpecChat>,
+) -> ApiResult {
+    Ok(Json(
+        json!({"run":s.workflow.requirement_chat(&id,body.prompt,body.request_id,&s.origin).await?}),
+    ))
+}
+async fn workflow_settings(
+    State(s): State<WebState>,
+    Json(settings): Json<crate::workflow::Settings>,
+) -> ApiResult {
+    s.workflow.settings(settings).await?;
+    workflow_snapshot(State(s)).await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateSpec {
+    requirement_id: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+}
+async fn create_spec(State(s): State<WebState>, Json(body): Json<CreateSpec>) -> ApiResult {
+    Ok(Json(
+        json!({"spec":s.workflow.create_spec(body.requirement_id,body.title,body.description).await?}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecAction {
+    action: String,
+}
+async fn spec_action(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<SpecAction>,
+) -> ApiResult {
+    s.workflow.spec_action(&id, &body.action).await?;
+    workflow_snapshot(State(s)).await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecChat {
+    prompt: String,
+    request_id: String,
+}
+async fn spec_chat(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<SpecChat>,
+) -> ApiResult {
+    Ok(Json(
+        json!({"run":s.workflow.chat(&id,body.prompt,body.request_id).await?}),
+    ))
+}
+async fn workflow_file(
+    State(s): State<WebState>,
+    Path((id, name)): Path<(String, String)>,
+) -> ApiResult {
+    Ok(Json(json!({"content":s.workflow.file(&id,&name).await?})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileContent {
+    content: String,
+    previous: Option<String>,
+}
+async fn save_workflow_file(
+    State(s): State<WebState>,
+    Path((id, name)): Path<(String, String)>,
+    Json(body): Json<FileContent>,
+) -> ApiResult {
+    s.workflow
+        .save_file(&id, &name, &body.content, body.previous.as_deref())
+        .await?;
+    Ok(Json(json!({"saved":true})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTask {
+    requirement_id: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    role: crate::workflow::Role,
+}
+async fn create_task(State(s): State<WebState>, Json(body): Json<CreateTask>) -> ApiResult {
+    Ok(Json(
+        json!({"task":s.workflow.create_task(body.requirement_id,body.title,body.description,body.role).await?}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskAction {
+    action: String,
+    description: Option<String>,
+    agent_id: Option<String>,
+}
+async fn task_action(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<TaskAction>,
+) -> ApiResult {
+    s.workflow
+        .task_action(&id, &body.action, body.description, body.agent_id)
+        .await?;
+    workflow_snapshot(State(s)).await
 }
 async fn same_origin(State(state): State<WebState>, request: Request, next: Next) -> Response {
     let expected_host = state.origin.strip_prefix("http://").unwrap_or_default();

@@ -25,14 +25,15 @@ import type { EntityEditor } from './components/EntityDialog'
 import { MemoryPanel } from './components/MemoryPanel'
 import { Chat } from './components/Chat'
 import { TaskPanel } from './components/TaskPanel'
+import { SpecPanel } from './components/SpecPanel'
+import { AgentChat } from './components/AgentChat'
 import { TaskDetails } from './components/TaskDetails'
 import { Settings } from './components/Settings'
 import { AgentSettings } from './components/AgentSettings'
 import { Login } from './components/Login'
 import { Action, AgentAvatar, Icon } from './components/shared'
 import { statusLabels } from './constants'
-import type { TaskType } from './localTypes'
-import { taskTypeInfo, taskTypes } from './services/sdd'
+import type { QueueRole } from './services/workflow'
 import { statusColors } from './theme'
 import './App.css'
 
@@ -65,9 +66,10 @@ export default function App() {
   const [nameDraft, setNameDraft] = useState('Haibin')
   const [createStatus, setCreateStatus] = useState<TaskStatus | null>(null)
   const [taskTitle, setTaskTitle] = useState('')
-  const [taskType, setTaskType] = useState<TaskType | ''>('')
+  const [taskRole, setTaskRole] = useState<QueueRole>('coding')
   const splitRef = useRef<HTMLDivElement>(null)
   const taskOpenerRef = useRef<HTMLElement | null>(null)
+  const specDirtyRef = useRef(false)
   const [lastTaskId, setLastTaskId] = useState('T-24')
   const compact = useMediaQuery('(max-width: 1199px)')
   const mobile = useMediaQuery('(max-width: 899px)')
@@ -109,6 +111,8 @@ export default function App() {
     }
   }
   function changeScope(next: ChatScope) {
+    if (specDirtyRef.current && !window.confirm('Spec 文档尚未保存，放弃更改并切换？')) return
+    specDirtyRef.current = false
     if (next.projectId) {
       setCurrentProjectId(next.projectId)
       setCurrentRequirementId(
@@ -193,6 +197,8 @@ export default function App() {
     onProject: (project?: Project) => setEntityEditor({ kind: 'project', project }),
     onRequirement: (projectId: string, requirement?: Requirement) =>
       setEntityEditor({ kind: 'requirement', projectId, requirement }),
+    onSpec: (requirement: Requirement) =>
+      setEntityEditor({ kind: 'spec', projectId: requirement.projectId, requirement }),
     onAgentSettings: (agent: Agent) =>
       agent.hubManaged
         ? setNotice('请编辑 ~/.reind/agents 下的 Agent 配置文件。')
@@ -200,6 +206,8 @@ export default function App() {
     onCreateAgent: () => setConfiguredAgent('new'),
   }
   const selectedAgent = data.agents.find((agent) => agent.id === scope.agentId)
+  const selectedSpec = data.workflow?.specs.find((spec) => spec.id === scope.specId)
+  const mainAgent = data.agents.find((agent) => agent.id === data.workflow?.settings.main_agent)
   const sidebar = <Sidebar {...sidebarProps} />
   return (
     <div
@@ -237,13 +245,13 @@ export default function App() {
                   variant={mobilePanel === 'chat' ? 'contained' : 'text'}
                   onClick={() => setMobilePanel('chat')}
                 >
-                  群聊
+                  {selectedSpec ? '主 Agent' : '群聊'}
                 </Button>
                 <Button
                   variant={mobilePanel === 'tasks' ? 'contained' : 'text'}
                   onClick={() => setMobilePanel('tasks')}
                 >
-                  {selectedAgent ? 'Memory' : '任务'}
+                  {selectedAgent ? 'Memory' : selectedSpec ? 'Spec' : '任务'}
                 </Button>
               </div>
             )}
@@ -256,15 +264,44 @@ export default function App() {
             gridTemplateColumns: mobile ? undefined : `${chatWidth}px 1px minmax(360px, 1fr)`,
           }}
         >
-          <Chat
-            data={data}
-            scope={scope}
-            onTask={showTask}
-            onMembers={() => setInfo('members')}
-            notify={notify}
-            sendMode={preferences.sendMode}
-            userName={userName}
-          />
+          {selectedSpec ? (
+            mainAgent ? (
+              <AgentChat
+                key={`${selectedSpec.id}-${mainAgent.id}`}
+                spec={selectedSpec}
+                title={scope.title}
+                agent={mainAgent}
+                userName={userName}
+                sendMode={preferences.sendMode}
+                onSettings={() => setSettings(true)}
+              />
+            ) : (
+              <section className="chat-panel">
+                <header className="panel-header">
+                  <Icon name="spec" />
+                  <h1>{scope.title}</h1>
+                  <span className="spacer" />
+                  <Action label="Spec 配置" icon="settings" onClick={() => setSettings(true)} />
+                </header>
+                <div className="empty-message">
+                  <Icon name="agents" />
+                  <p>请先设置主 Agent</p>
+                  <Button onClick={() => setSettings(true)}>打开系统配置</Button>
+                </div>
+              </section>
+            )
+          ) : (
+            <Chat
+              data={data}
+              scope={scope}
+              onTask={showTask}
+              onMembers={() => setInfo('members')}
+              notify={notify}
+              sendMode={preferences.sendMode}
+              userName={userName}
+              onSettings={() => setSettings(true)}
+            />
+          )}
           <div
             className="split-divider"
             role="separator"
@@ -304,18 +341,46 @@ export default function App() {
           </div>
           {selectedAgent ? (
             <MemoryPanel agent={selectedAgent} />
+          ) : selectedSpec ? (
+            <SpecPanel
+              key={selectedSpec.id}
+              spec={selectedSpec}
+              data={data}
+              onTask={showTask}
+              onSettings={() => setSettings(true)}
+              notify={notify}
+              onDirtyChange={(dirty) => {
+                specDirtyRef.current = dirty
+              }}
+            />
           ) : (
             <TaskPanel
               data={data}
               scope={scope}
               selectedId={selectedTask ?? lastTaskId}
               onTask={showTask}
-              onCreate={(status) => {
-                setCreateStatus(status)
+              onCreate={() => {
+                setCreateStatus('todo')
                 setTaskTitle('')
-                setTaskType('')
+                setTaskRole('coding')
               }}
               notify={notify}
+              onSettings={() => setSettings(true)}
+              onSpec={(id) => {
+                const spec = data.workflow?.specs.find((spec) => spec.id === id)
+                const requirement = data.requirements.find(
+                  (requirement) => requirement.id === spec?.requirement_id,
+                )
+                if (spec && requirement)
+                  changeScope({
+                    id: spec.id,
+                    title: `${requirement.title} - ${spec.title}`,
+                    label: 'Spec',
+                    projectId: spec.project_id,
+                    requirementId: spec.requirement_id,
+                    specId: spec.id,
+                  })
+              }}
             />
           )}
         </div>
@@ -328,6 +393,8 @@ export default function App() {
         expanded={expanded}
         defaultWidth={detailDefaultWidth}
         todoWidth={mobile ? viewportWidth : workspaceWidth - chatWidth}
+        panelLabel={selectedSpec ? 'Spec' : 'Todo'}
+        chatLabel={selectedSpec ? '对话' : '群聊'}
         widthRatio={detailWidthRatio}
         onWidthRatioChange={(ratio) => {
           setDetailWidthRatio(ratio)
@@ -509,8 +576,7 @@ export default function App() {
                       data.requirements.find((r) => r.projectId === currentProjectId)?.id ??
                       '',
                     taskTitle.trim(),
-                    createStatus,
-                    taskType || undefined,
+                    taskRole,
                   )
                   setCreateStatus(null)
                   notify('任务已创建')
@@ -527,28 +593,11 @@ export default function App() {
               任务类型
               <select
                 aria-label="任务类型"
-                value={taskType}
-                onChange={(event) => {
-                  const type = event.target.value as TaskType | ''
-                  setTaskType(type)
-                  if (type) setTaskTitle(taskTypeInfo[type].title)
-                }}
+                value={taskRole}
+                onChange={(event) => setTaskRole(event.target.value as QueueRole)}
               >
-                <option value="">普通任务</option>
-                {taskTypes.map((type) => (
-                  <option
-                    key={type}
-                    value={type}
-                    disabled={
-                      createStatus !== 'todo' ||
-                      data.tasks.some(
-                        (task) => task.requirementId === scope.requirementId && task.type === type,
-                      )
-                    }
-                  >
-                    {taskTypeInfo[type].label}
-                  </option>
-                ))}
+                <option value="coding">Coding · 开发任务</option>
+                <option value="review">Review · 验证任务</option>
               </select>
             </label>
             <TextField
@@ -571,7 +620,17 @@ export default function App() {
           editor={entityEditor}
           onClose={() => setEntityEditor(null)}
           onSaved={(result) => {
-            const editing = !!(entityEditor.project || entityEditor.requirement)
+            const editing =
+              entityEditor.kind !== 'spec' && !!(entityEditor.project || entityEditor.requirement)
+            if (result.kind === 'spec')
+              changeScope({
+                id: result.id,
+                title: `${entityEditor.requirement!.title} - ${result.name}`,
+                label: 'Spec',
+                projectId: result.projectId,
+                requirementId: entityEditor.requirement!.id,
+                specId: result.id,
+              })
             setEntityEditor(null)
             if (result.kind === 'requirement' && (!editing || scope.id === result.id))
               changeScope({
@@ -588,7 +647,9 @@ export default function App() {
                 label: '当前项目',
                 projectId: result.id,
               })
-            notify(`${result.kind === 'project' ? '项目' : '需求'}已${editing ? '更新' : '创建'}`)
+            notify(
+              `${result.kind === 'project' ? '项目' : result.kind === 'spec' ? 'Spec' : '需求'}已${editing ? '更新' : '创建'}`,
+            )
           }}
         />
       )}

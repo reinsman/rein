@@ -1,5 +1,5 @@
 import { Avatar, IconButton, Tooltip } from '@mui/material'
-import { Blocks } from 'lucide-react'
+import { Blocks, Waypoints, FilePlus2 } from 'lucide-react'
 import type { Agent, ExecutionState } from '../types'
 import type { ReactNode } from 'react'
 
@@ -65,7 +65,11 @@ export function Icon({
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      {name === 'project' ? (
+      {name === 'specAdd' ? (
+        <FilePlus2 size={size} strokeWidth={1.75} />
+      ) : name === 'spec' ? (
+        <Waypoints size={size} strokeWidth={1.75} />
+      ) : name === 'project' ? (
         <Blocks size={size} strokeWidth={1.75} color="#202632" />
       ) : (
         <img

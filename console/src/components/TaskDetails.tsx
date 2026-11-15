@@ -25,6 +25,8 @@ import { Action, Icon, StatusDot } from './shared'
 import { statusLabels } from '../constants'
 import { TaskTypeBadge } from './TaskTypeBadge'
 import { TaskContent } from './TaskContent'
+import { HandoffLinks } from './HandoffLinks'
+import { TaskRun } from './TaskRun'
 
 interface Props {
   data: AppData
@@ -32,6 +34,8 @@ interface Props {
   expanded: boolean
   defaultWidth: number
   todoWidth: number
+  panelLabel?: string
+  chatLabel?: string
   widthRatio: number | null
   onWidthRatioChange: (ratio: number) => void
   availableLeft: number
@@ -46,6 +50,8 @@ export function TaskDetails({
   expanded,
   defaultWidth,
   todoWidth,
+  panelLabel = 'Todo',
+  chatLabel = '群聊',
   widthRatio,
   onWidthRatioChange,
   availableLeft,
@@ -88,10 +94,10 @@ export function TaskDetails({
   const widthActionLabel = restoringCustom
     ? '恢复自定义宽度'
     : restoringTodo
-      ? '缩回 Todo 栏'
+      ? `缩回 ${panelLabel} 栏`
       : coversTodo
-        ? '覆盖群聊栏'
-        : '覆盖 Todo 栏'
+        ? `覆盖${chatLabel}栏`
+        : `覆盖 ${panelLabel} 栏`
   const previousLayout = useRef({ availableLeft, viewportWidth, maximumWidth, normalWidth })
   const detailRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
@@ -167,11 +173,13 @@ export function TaskDetails({
           ? task!.type === 'verification'
             ? '确认验收通过'
             : '确认完成任务'
-          : status === 'running'
-            ? readOnly
-              ? '重新打开任务'
-              : '开始任务'
-            : '保存草稿'
+          : status === 'todo' && task!.queue
+            ? '停止任务'
+            : status === 'running'
+              ? readOnly
+                ? '重新打开任务'
+                : '开始任务'
+              : '保存草稿'
       const saved = await reinService.saveTask(
         task!.id,
         { ...draft, ...(status ? { status } : {}) },
@@ -274,7 +282,7 @@ export function TaskDetails({
             className="detail-resize-handle"
             role="separator"
             aria-label="调整任务详情宽度"
-            title="双击依次覆盖 Todo、群聊，再逐级恢复；也可按 Enter"
+            title={`双击依次覆盖 ${panelLabel}、${chatLabel}，再逐级恢复；也可按 Enter`}
             aria-orientation="vertical"
             aria-valuemin={Math.round(minimumWidth)}
             aria-valuemax={maximumWidth}
@@ -328,7 +336,7 @@ export function TaskDetails({
             <select
               id={`task-agent-${task.id}`}
               value={draft.agent_id}
-              disabled={readOnly || saving}
+              disabled={readOnly || saving || !!task.queue}
               onChange={(event) => changeDraft({ agent_id: event.target.value })}
             >
               <option value="">未分配</option>
@@ -383,24 +391,43 @@ export function TaskDetails({
             {tab === 0 ? (
               <fieldset className="sdd-editor-fields" disabled={saving}>
                 <TaskContent task={task} tasks={data.tasks} draft={draft} onChange={changeDraft} />
+                {task.queue && (
+                  <>
+                    <p className="sdd-section-note">
+                      {task.queue.role === 'coding' ? 'Coding' : 'Review'} ·{' '}
+                      {task.queue.spec_id
+                        ? data.workflow?.specs.find((spec) => spec.id === task.queue?.spec_id)
+                            ?.title
+                        : '需求直接任务'}
+                    </p>
+                    {task.queue.error && <Alert severity="error">{task.queue.error}</Alert>}
+                    <HandoffLinks task={task.queue} workflow={data.workflow} />
+                  </>
+                )}
               </fieldset>
             ) : (
               <div className="sdd-task-history">
                 <h3>工作记录</h3>
-                <p className="sdd-section-note">
-                  这里记录任务的创建、保存和确认操作。负责人分配不会自动启动 Agent。
-                </p>
-                {task.history?.length ? (
-                  [...task.history].reverse().map((item, index) => (
-                    <div className="sdd-history-row" key={`${item.at}-${index}`}>
-                      <time dateTime={new Date(item.at).toISOString()}>
-                        {new Date(item.at).toLocaleString('zh-CN')}
-                      </time>
-                      <span>{item.message}</span>
-                    </div>
-                  ))
+                {task.queue ? (
+                  <TaskRun task={task.queue} agents={data.agents} />
                 ) : (
-                  <p className="muted">尚无工作记录。</p>
+                  <>
+                    <p className="sdd-section-note">
+                      这里记录任务的创建、保存和确认操作。负责人分配不会自动启动 Agent。
+                    </p>
+                    {task.history?.length ? (
+                      [...task.history].reverse().map((item, index) => (
+                        <div className="sdd-history-row" key={`${item.at}-${index}`}>
+                          <time dateTime={new Date(item.at).toISOString()}>
+                            {new Date(item.at).toLocaleString('zh-CN')}
+                          </time>
+                          <span>{item.message}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="muted">尚无工作记录。</p>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -409,14 +436,16 @@ export function TaskDetails({
             <div className="readonly-status">
               <Icon name={blocked ? 'lock' : 'info'} size={13} />
               <span>
-                {blocked ||
-                  (readOnly
-                    ? '已确认；重新打开会将后续阶段移回待开始。'
-                    : task.status === 'running' && completion
-                      ? completion
-                      : dirty
-                        ? '有尚未保存的更改'
-                        : '任务进度与验收结果由你确认。')}
+                {task.queue
+                  ? '任务由对应角色 Agent 执行，完成后校验结果和 handoff。'
+                  : blocked ||
+                    (readOnly
+                      ? '已确认；重新打开会将后续阶段移回待开始。'
+                      : task.status === 'running' && completion
+                        ? completion
+                        : dirty
+                          ? '有尚未保存的更改'
+                          : '任务进度与验收结果由你确认。')}
               </span>
             </div>
             <div className="detail-controls">
@@ -442,7 +471,17 @@ export function TaskDetails({
                 </Button>
               )}
               <span className="spacer" />
-              {readOnly ? (
+              {task.queue ? (
+                task.status !== 'done' && (
+                  <Button
+                    variant="contained"
+                    disabled={saving}
+                    onClick={() => void save(task.status === 'running' ? 'todo' : 'running')}
+                  >
+                    {task.status === 'running' ? '停止任务' : '开始任务'}
+                  </Button>
+                )
+              ) : readOnly ? (
                 <Button
                   variant="outlined"
                   disabled={saving}

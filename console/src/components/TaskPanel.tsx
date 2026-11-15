@@ -5,8 +5,10 @@ import { reinService, taskHasActiveAgent, tasksInScope } from '../services/reinS
 import { Action, AgentAvatar, Icon, StatusDot } from './shared'
 import { statusLabels } from '../constants'
 import { TaskDependencies } from './TaskDependencies'
-import { blockedReason, taskProgress, taskTypes } from '../services/sdd'
+import { blockedReason, taskProgress } from '../services/sdd'
 import { TaskTypeBadge } from './TaskTypeBadge'
+import { HandoffLinks } from './HandoffLinks'
+import { workflowService } from '../services/workflow'
 
 interface Props {
   data: AppData
@@ -15,9 +17,19 @@ interface Props {
   onTask: (id: string) => void
   onCreate: (status: TaskStatus) => void
   notify: (message: string) => void
+  onSpec: (id: string) => void
+  onSettings: () => void
 }
-export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }: Props) {
-  const [initializing, setInitializing] = useState(false)
+export function TaskPanel({
+  data,
+  scope,
+  selectedId,
+  onTask,
+  onCreate,
+  notify,
+  onSpec,
+  onSettings,
+}: Props) {
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<{ status: TaskStatus; beforeId?: string } | null>(
     null,
@@ -58,41 +70,13 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
         <Icon name="checklist" size={20} />
         <h2>Todo</h2>
         <span className="spacer" />
-        {scope.requirementId &&
-          taskTypes.some(
-            (type) =>
-              !data.tasks.some(
-                (task) => task.requirementId === scope.requirementId && task.type === type,
-              ),
-          ) && (
-            <Button
-              disabled={initializing}
-              onClick={async () => {
-                setInitializing(true)
-                try {
-                  await reinService.initializeSdd(scope.requirementId!)
-                  notify('SDD 阶段任务已创建')
-                } catch (error) {
-                  notify(error instanceof Error ? error.message : '无法创建阶段任务')
-                } finally {
-                  setInitializing(false)
-                }
-              }}
-            >
-              初始化 SDD
-            </Button>
-          )}
         <Action
           label="筛选任务"
           icon="filter"
           className={filter !== 'all' ? 'active-action' : ''}
           onClick={(e) => setFilterAnchor(e.currentTarget)}
         />
-        <Action
-          label="任务栏设置"
-          icon="settings"
-          onClick={() => notify('任务栏设置功能待确定。')}
-        />
+        <Action label="任务栏设置" icon="settings" onClick={onSettings} />
       </header>
       <div className="task-board-scroll">
         <div className="task-groups" ref={boardRef}>
@@ -137,9 +121,9 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
                     return (
                       <Paper
                         data-task-id={task.id}
-                        draggable={!taskHasActiveAgent(task)}
+                        draggable={!task.queue && !taskHasActiveAgent(task)}
                         onDragStart={(event) => {
-                          if (taskHasActiveAgent(task)) {
+                          if (task.queue || taskHasActiveAgent(task)) {
                             event.preventDefault()
                             return
                           }
@@ -177,11 +161,27 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
                           finishDrop()
                         }}
                         variant="outlined"
-                        className={`task-card ${selectedId === task.id ? 'selected' : ''} ${task.execution === 'waiting' ? 'waiting-task' : ''} ${blocked ? 'is-blocked' : ''} ${draggedId === task.id ? 'is-dragging' : ''} ${draggedId && dropTarget?.beforeId === task.id ? 'drop-before' : ''}`}
+                        className={`task-card ${task.queue?.spec_id ? 'sdd-task-card' : ''} ${task.queue ? `queue-task-card queue-${task.queue.role}` : ''} ${selectedId === task.id ? 'selected' : ''} ${task.execution === 'waiting' ? 'waiting-task' : ''} ${blocked ? 'is-blocked' : ''} ${draggedId === task.id ? 'is-dragging' : ''} ${draggedId && dropTarget?.beforeId === task.id ? 'drop-before' : ''}`}
                         key={task.id}
                       >
                         <div className="task-card-meta">
-                          <TaskTypeBadge type={task.type} />
+                          {task.queue ? (
+                            <span className="queue-role">
+                              <Icon
+                                name={task.queue.role === 'coding' ? 'code' : 'shield'}
+                                size={13}
+                              />
+                              {task.queue.role === 'coding' ? 'Coding' : 'Review'}
+                            </span>
+                          ) : (
+                            <TaskTypeBadge type={task.type} />
+                          )}
+                          {task.queue?.spec_id && (
+                            <span className="queue-sdd-mark">
+                              <Icon name="spec" size={12} />
+                              SDD
+                            </span>
+                          )}
                           <span className="task-card-number">{task.displayId ?? task.id}</span>
                           {task.execution === 'waiting' && (
                             <span className="needs-reply-badge">需你回复</span>
@@ -227,6 +227,48 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
                             <span>{agent?.name ?? '未分配'}</span>
                           </div>
                         </ButtonBase>
+                        {task.queue && (
+                          <>
+                            <div className="queue-source">
+                              {task.queue.spec_id ? (
+                                <button onClick={() => onSpec(task.queue!.spec_id!)}>
+                                  <Icon name="spec" size={12} />
+                                  {
+                                    data.workflow?.specs.find(
+                                      (spec) => spec.id === task.queue?.spec_id,
+                                    )?.title
+                                  }
+                                </button>
+                              ) : (
+                                '直接任务'
+                              )}
+                            </div>
+                            {task.queue.error && <p className="queue-error">{task.queue.error}</p>}
+                            <HandoffLinks task={task.queue} workflow={data.workflow} />
+                            {task.status !== 'done' && (
+                              <div className="queue-controls">
+                                <Button
+                                  size="small"
+                                  onClick={() =>
+                                    void workflowService
+                                      .taskAction(
+                                        task.id,
+                                        task.status === 'running' ? 'stop' : 'start',
+                                      )
+                                      .then(() => reinService.refreshWorkflow())
+                                      .catch((error) => notify(String(error)))
+                                  }
+                                >
+                                  {task.status === 'running'
+                                    ? '停止任务'
+                                    : task.queue.paused || task.queue.error
+                                      ? '重试任务'
+                                      : '开始任务'}
+                                </Button>
+                              </div>
+                            )}
+                          </>
+                        )}
                       </Paper>
                     )
                   })}
@@ -256,7 +298,7 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
       </Menu>
       <Menu anchorEl={taskMenu?.el} open={!!taskMenu} onClose={() => setTaskMenu(null)}>
         <MenuItem
-          disabled={!taskMenu || taskHasActiveAgent(taskMenu.task)}
+          disabled={!taskMenu || !!taskMenu.task.queue || taskHasActiveAgent(taskMenu.task)}
           onClick={() => {
             if (taskMenu) {
               const group = tasks.filter((t) => t.status === taskMenu.task.status)
@@ -270,7 +312,7 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
           上移任务
         </MenuItem>
         <MenuItem
-          disabled={!taskMenu || taskHasActiveAgent(taskMenu.task)}
+          disabled={!taskMenu || !!taskMenu.task.queue || taskHasActiveAgent(taskMenu.task)}
           onClick={() => {
             if (taskMenu) {
               const group = tasks.filter((t) => t.status === taskMenu.task.status)
@@ -286,7 +328,10 @@ export function TaskPanel({ data, scope, selectedId, onTask, onCreate, notify }:
         {(Object.keys(statusLabels) as TaskStatus[]).map((status) => (
           <MenuItem
             key={status}
-            disabled={!!taskMenu && taskHasActiveAgent(taskMenu.task)}
+            disabled={
+              !!taskMenu &&
+              (taskHasActiveAgent(taskMenu.task) || (!!taskMenu.task.queue && status === 'done'))
+            }
             onClick={() => {
               if (taskMenu) void moveTask(taskMenu.task.id, status)
               setTaskMenu(null)

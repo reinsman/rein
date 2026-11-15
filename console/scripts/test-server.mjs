@@ -18,7 +18,7 @@ for (const provider of ['pi', 'codex']) {
       enabled: true,
       directory: `${home}/${provider}`,
       native_config: `${home}/native`,
-      executable: resolve(root, '../a2alinker/crates/a2alinker/tests/fixtures/fake_agent.py'),
+      executable: resolve(root, 'tests/fixtures/workflow_agent.py'),
     }),
   )
 }

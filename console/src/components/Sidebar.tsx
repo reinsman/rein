@@ -15,6 +15,7 @@ interface Props {
   onAccount: (el: HTMLElement) => void
   onProject: (project?: Project) => void
   onRequirement: (projectId: string, requirement?: Requirement) => void
+  onSpec: (requirement: Requirement) => void
   onAgentSettings: (agent: Agent) => void
   onCreateAgent: () => void
   userName: string
@@ -28,6 +29,7 @@ export function Sidebar({
   onAccount,
   onProject,
   onRequirement,
+  onSpec,
   onAgentSettings,
   onCreateAgent,
   userName,
@@ -122,30 +124,63 @@ export function Sidebar({
                         {requirements
                           .filter((r) => matches(r.title) || matches(project.name))
                           .map((requirement) => (
-                            <div className="requirement-row" key={requirement.id}>
-                              <ListItemButton
-                                component="button"
-                                className="tree-child"
-                                selected={scope.id === requirement.id}
-                                onClick={() =>
-                                  onScope({
-                                    id: requirement.id,
-                                    title: requirement.title,
-                                    label: '当前需求',
-                                    projectId: project.id,
-                                    requirementId: requirement.id,
-                                  })
-                                }
-                              >
-                                <Icon name="requirement" />
-                                <span className="nav-text">{requirement.title}</span>
-                              </ListItemButton>
-                              <Action
-                                label={`编辑需求 ${requirement.title}`}
-                                icon="edit"
-                                className="requirement-edit quiet-action"
-                                onClick={() => onRequirement(project.id, requirement)}
-                              />
+                            <div className="requirement-with-specs" key={requirement.id}>
+                              <div className="requirement-row">
+                                <ListItemButton
+                                  component="button"
+                                  className="tree-child"
+                                  selected={scope.id === requirement.id}
+                                  onClick={() =>
+                                    onScope({
+                                      id: requirement.id,
+                                      title: requirement.title,
+                                      label: '当前需求',
+                                      projectId: project.id,
+                                      requirementId: requirement.id,
+                                    })
+                                  }
+                                >
+                                  <Icon name="requirement" />
+                                  <span className="nav-text">{requirement.title}</span>
+                                </ListItemButton>
+                                <Action
+                                  label={`编辑需求 ${requirement.title}`}
+                                  icon="edit"
+                                  className="requirement-edit quiet-action"
+                                  onClick={() => onRequirement(project.id, requirement)}
+                                />
+                                <Action
+                                  label={`新建 Spec ${requirement.title}`}
+                                  icon="specAdd"
+                                  className="requirement-new-spec quiet-action"
+                                  onClick={() => onSpec(requirement)}
+                                />
+                              </div>
+                              <div className="spec-tree">
+                                {data.workflow?.specs
+                                  .filter((spec) => spec.requirement_id === requirement.id)
+                                  .map((spec) => (
+                                    <ListItemButton
+                                      component="button"
+                                      key={spec.id}
+                                      selected={scope.specId === spec.id}
+                                      aria-label={`打开 Spec ${spec.title}`}
+                                      onClick={() =>
+                                        onScope({
+                                          id: spec.id,
+                                          title: `${requirement.title} - ${spec.title}`,
+                                          label: 'Spec',
+                                          projectId: project.id,
+                                          requirementId: requirement.id,
+                                          specId: spec.id,
+                                        })
+                                      }
+                                    >
+                                      <Icon name="spec" />
+                                      <span className="nav-text">{spec.title}</span>
+                                    </ListItemButton>
+                                  ))}
+                              </div>
                             </div>
                           ))}
                       </div>
