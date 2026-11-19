@@ -3532,15 +3532,19 @@ textarea {
   width: 13px;
   height: 13px;
 }
-.spec-document-state.generated::before {
+.spec-document-state:is(.current, .stopped, .generated)::before {
   content: '';
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
-.spec-document-state.current {
-  color: #0866ff;
+.spec-document-state.current,
+.spec-document-state.running {
+  color: var(--primary);
+}
+.spec-document-state.stopped {
+  color: var(--secondary);
 }
 .spec-stage-tabs button[aria-selected='true'] {
   color: #0866ff;

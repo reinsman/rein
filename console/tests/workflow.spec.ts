@@ -294,6 +294,12 @@ test('Spec build and verification use the shared queue and real handoff artifact
   expect(completedDocument.content).toContain('- [x] T-02')
   expect(completedDocument.content).toContain('## Verification Results')
   await expect(page.locator('.task-group-done .task-card')).toHaveCount(4)
+  await expect(
+    page.locator('.task-group-done .group-header img[src$="main-MaterialCheck.svg"]'),
+  ).toBeVisible()
+  await expect(
+    page.locator('.task-group-done .task-state img[src$="main-MaterialCheck.svg"]'),
+  ).toHaveCount(4)
   await expect(requirementStatus).toHaveCount(0)
   await expect(specStatus).toHaveCount(0)
   await page
@@ -426,6 +432,13 @@ test('Spec document edits share phase review and next-document choices with chat
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await panel.getByRole('button', { name: '确认需求，继续设计', exact: true }).click()
   await expect(panel.locator('.spec-phase-status')).toContainText('设计 · 待确认')
+  const currentDot = panel
+    .getByRole('tab', { name: '设计', exact: true })
+    .locator('.spec-document-state')
+  await expect(currentDot).toHaveAttribute('aria-label', '当前阶段')
+  expect(await currentDot.evaluate((dot) => getComputedStyle(dot, '::before').backgroundColor)).toBe(
+    'rgb(8, 102, 255)',
+  )
   const originalDesign = (await (await request.get(`/api/artifacts/${spec.id}/design.md`)).json())
     .content
   await request.post(`/api/artifacts/${spec.id}/tasks.md`, {
@@ -1015,6 +1028,13 @@ test('sidebar follows Spec generation, interaction and failure away from the Spe
   await specNode.click()
   const specWorkspace = page.getByRole('region', { name: 'Spec 工作区', exact: true })
   await expect(specStatus).toHaveAttribute('data-state', 'paused')
+  const stoppedDot = specWorkspace
+    .getByRole('tab', { name: '需求', exact: true })
+    .locator('.spec-document-state')
+  await expect(stoppedDot).toHaveAttribute('aria-label', '已停止，未完成')
+  expect(await stoppedDot.evaluate((dot) => getComputedStyle(dot, '::before').backgroundColor)).toBe(
+    'rgb(122, 129, 144)',
+  )
   await specWorkspace.getByRole('button', { name: '消除已停止或暂停提示' }).click()
   await expect(specStatus).toHaveCount(0)
   await requirementNode.click()

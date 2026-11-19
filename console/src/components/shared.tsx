@@ -215,7 +215,7 @@ export function StatusDot({
   online?: boolean
 }) {
   const asset = status
-    ? { todo: 'StatusDot', running: 'StatusDot1', done: 'StatusDot2' }[status]
+    ? { todo: 'StatusDot', running: 'StatusDot1', done: 'MaterialCheck' }[status]
     : online
       ? 'StatusDot4'
       : 'StatusDot3'

@@ -124,6 +124,11 @@ export function SpecPanel({
             : progress.blocking
               ? '等待补充信息'
               : '编写中'
+  const currentStage = agentRunning
+    ? 'running'
+    : spec.paused || planningStatus === '已中断'
+      ? 'stopped'
+      : 'current'
   const editable = tab < 3 && (!planning || tab <= phaseTab(phase))
   const queue = data.workflow?.tasks.filter((task) => task.spec_id === spec.id) ?? []
   const coding = queue.filter((task) => task.role === 'coding')
@@ -342,14 +347,21 @@ export function SpecPanel({
         {['需求', '设计', '任务', '验证'].map((label, index) => {
           const current = phase !== 'complete' && index === phaseTab(phase)
           const state = current
-            ? 'current'
+            ? currentStage
             : documents[index]?.generated
               ? documents[index].confirmed
                 ? 'confirmed'
                 : 'generated'
               : undefined
           const status =
-            state && { current: '进行中', confirmed: '已确认', generated: '已生成' }[state]
+            state &&
+            {
+              running: '进行中',
+              current: '当前阶段',
+              stopped: '已停止，未完成',
+              confirmed: '已确认',
+              generated: '已生成',
+            }[state]
           return (
             <button
               key={label}
@@ -362,12 +374,8 @@ export function SpecPanel({
             >
               {state && (
                 <span className={`spec-document-state ${state}`} title={status} aria-label={status}>
-                  {current ? (
-                    <LoaderCircle
-                      size={13}
-                      className={agentRunning ? 'spin' : undefined}
-                      aria-hidden="true"
-                    />
+                  {state === 'running' ? (
+                    <LoaderCircle size={13} className="spin" aria-hidden="true" />
                   ) : state === 'confirmed' ? (
                     <Check size={13} strokeWidth={2.5} aria-hidden="true" />
                   ) : null}
