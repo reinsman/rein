@@ -57,11 +57,12 @@ struct AddAgent {
     /// Environment variable containing the remote A2A bearer token
     #[arg(long, requires = "a2a")]
     token_env: Option<String>,
-    /// Agent's working directory (defaults to the current directory)
+    /// Standalone working directory (defaults to the Agent type directory)
     #[arg(long, visible_alias = "workspace")]
     directory: Option<PathBuf>,
     #[arg(long)]
     executable: Option<PathBuf>,
+    /// Import from this native directory or file when the shared type config is first created
     #[arg(long)]
     native_config: Option<PathBuf>,
     #[arg(long)]
@@ -101,7 +102,6 @@ fn main() -> Result<()> {
             },
             AgentCommand::Rm { name } => Request::RemoveAgent { name },
             AgentCommand::Add(options) => {
-                let remote = options.a2a.is_some();
                 let executable = options
                     .executable
                     .map(|p| {
@@ -122,17 +122,11 @@ fn main() -> Result<()> {
                             url,
                             token_env: options.token_env,
                         }),
-                        directory: if remote {
-                            None
-                        } else {
-                            Some(
-                                options
-                                    .directory
-                                    .unwrap_or(std::env::current_dir()?)
-                                    .canonicalize()
-                                    .context("resolve directory")?,
-                            )
-                        },
+                        directory: options
+                            .directory
+                            .map(std::fs::canonicalize)
+                            .transpose()
+                            .context("resolve directory")?,
                         executable,
                         native_config: options
                             .native_config
@@ -141,6 +135,11 @@ fn main() -> Result<()> {
                             .context("resolve native config")?,
                         model: options.model,
                         prepare: options.prepare,
+                        permissions: Default::default(),
+                        reasoning_effort: None,
+                        skill_directories: vec![],
+                        skill_source: Default::default(),
+                        disabled_skills: vec![],
                     },
                 }
             }

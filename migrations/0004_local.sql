@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS local_runs (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS local_runs_agent ON local_runs(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS local_runs_session ON local_runs(session_id);
 CREATE TABLE IF NOT EXISTS local_events (
     run_id TEXT NOT NULL,
     sequence INTEGER NOT NULL,

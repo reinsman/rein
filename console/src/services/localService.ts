@@ -1,5 +1,5 @@
 import type { Agent } from '../types'
-import type { AgentConfig, Project } from '../localTypes'
+import type { AgentConfig, AgentSkills, Project } from '../localTypes'
 export type { Agent } from '../types'
 
 export type AgentRun = {
@@ -7,6 +7,7 @@ export type AgentRun = {
   attemptId: string
   sessionId: string
   agentId: string
+  workingDirectory?: string
   state: string
   cancelRequested: boolean
   finishedAt?: number | null
@@ -38,12 +39,18 @@ export type RunRecord = {
   run: AgentRun
   prompt: string
   created_at: string
-  command_acks?: { commandId: string; state: string; errorCode: string }[]
+  command_acks?: {
+    commandId: string
+    state: string
+    errorCode: string
+    instruction?: string
+    createdAt?: number
+  }[]
 }
 export type RunUpdate = RunRecord & { events: AgentEvent[] }
 export type HistoryPage = {
   runs: RunUpdate[]
-  sessions: { id: string; prompt: string }[]
+  sessions: { id: string; prompt: string; created_at?: string }[]
   session_id: string
   next_cursor: string
   stream_cursor: string
@@ -54,6 +61,7 @@ interface LocalRun {
   attempt_id: string
   session_id: string
   state: string
+  working_directory?: string
   cancel_requested: boolean
   last_sequence: number
   finished_at?: number | null
@@ -75,6 +83,7 @@ function toRun(run: LocalRun, agentId: string): AgentRun {
     attemptId: run.attempt_id,
     sessionId: run.session_id,
     agentId,
+    workingDirectory: run.working_directory,
     state: stateName(run.state),
     cancelRequested: run.cancel_requested,
     finishedAt: run.finished_at,
@@ -146,20 +155,29 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) throw new Error(body.error || `请求失败 (${response.status})`)
   return body as T
 }
+export function toAgent(a: AgentConfig): Agent {
+  return {
+    ...a,
+    role: '',
+    color: '#0866ff',
+    hubManaged: true,
+    id: a.name,
+    online: a.enabled,
+    disabled: !a.enabled,
+    cli: a.provider === 'pi' ? 'Pi' : 'Codex',
+    backend: a.a2a ? 'a2a' : 'native',
+  }
+}
 export const localService = {
+  skills: (name: string) => request<AgentSkills>(`/api/agents/${encodeURIComponent(name)}/skills`),
+  installReinSpec: (name: string) =>
+    request<AgentSkills>(`/api/agents/${encodeURIComponent(name)}/skills`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed: true }),
+    }),
   async agents(): Promise<Agent[]> {
     const { agents } = await request<{ agents: AgentConfig[] }>('/api/agents')
-    return agents.map((a) => ({
-      ...a,
-      role: '',
-      color: '#0866ff',
-      hubManaged: true,
-      id: a.name,
-      online: a.enabled,
-      disabled: !a.enabled,
-      cli: a.provider === 'pi' ? 'Pi' : 'Codex',
-      backend: a.a2a ? 'a2a' : 'native',
-    }))
+    return agents.map(toAgent)
   },
   async history(
     agent: string,
@@ -184,6 +202,10 @@ export const localService = {
     })
     return { run: toRun(run, agent_id) }
   },
+  async followupReady(runId: string, signal: AbortSignal) {
+    return (await request<{ ready: boolean }>(`/api/runs/${runId}/followup-ready`, { signal }))
+      .ready
+  },
   cancel(run: AgentRun, command_id: string) {
     return request(`/api/runs/${run.id}/cancel`, {
       method: 'POST',
@@ -196,6 +218,15 @@ export const localService = {
       body: JSON.stringify({ attempt_id: run.attemptId, command_id, interaction_id, response }),
     })
   },
+  instruct(run: AgentRun, instruction: string, command_id: string) {
+    return request<NonNullable<RunRecord['command_acks']>[number]>(
+      `/api/runs/${run.id}/instruction`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ attempt_id: run.attemptId, command_id, instruction }),
+      },
+    )
+  },
   async projects() {
     return (await request<{ projects: Project[] }>('/api/projects')).projects
   },
@@ -207,6 +238,34 @@ export const localService = {
       })
     ).project
   },
+}
+export async function waitUntil(
+  check: (signal: AbortSignal) => Promise<boolean>,
+  signal: AbortSignal,
+) {
+  for (;;) {
+    signal.throwIfAborted()
+    if (await check(AbortSignal.any([signal, AbortSignal.timeout(30000)]))) return
+    await new Promise((resolve) => window.setTimeout(resolve, 1000))
+  }
+}
+export function instructionError(ack: NonNullable<RunRecord['command_acks']>[number]) {
+  if (ack.state === 'COMMAND_ACK_STATE_APPLIED') return
+  return ack.state === 'COMMAND_ACK_STATE_REJECTED'
+    ? `Agent 未接收指导：${ack.errorCode}`
+    : '暂时无法确认 Agent 是否接收，请查看指导记录后再决定是否重试。'
+}
+export function chatErrorMessage(message: string, previous?: RunUpdate) {
+  const missingCodexHistory = (error: string) =>
+    error.startsWith('Codex rejected thread/resume:') &&
+    error.includes('no rollout found for thread id')
+  if (
+    missingCodexHistory(message) ||
+    (message === 'previous execution could not confirm shutdown; start a new conversation' &&
+      previous?.events.some((event) => event.error && missingCodexHistory(event.error.message)))
+  )
+    return '当前 Codex 配置目录找不到这条会话的历史记录，无法继续原会话。'
+  return message
 }
 export function decodeJson<T = Record<string, unknown>>(value: string): T {
   if (!value) return {} as T

@@ -50,12 +50,36 @@ impl Harness {
             thread::sleep(Duration::from_millis(80));
         }
     }
+    fn set_spec_phase(&self, id: &str, phase: &str) {
+        let state = self.workflow();
+        let spec = state["specs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|spec| spec["id"] == id)
+            .unwrap();
+        let path = self
+            .0
+            .path()
+            .join("specs")
+            .join(spec["directory"].as_str().unwrap())
+            .join(".spec-state.json");
+        std::fs::write(path, serde_json::to_vec(&json!({"phase":phase,"decisions":[],"blocking":null,"context":{"template":spec["kind"]}})).unwrap()).unwrap();
+        self.wait_workflow(|state| {
+            state["specs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|spec| spec["id"] == id && spec["phase"] == phase)
+        });
+    }
     fn new() -> Self {
         Self(tempfile::tempdir().unwrap())
     }
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_rein"))
             .args(args)
+            .env("HOME", self.0.path())
             .env("REIND_HOME", self.0.path())
             .env("REIND_HTTP_ADDR", "127.0.0.1:0")
             .env(
@@ -212,7 +236,7 @@ impl Drop for Harness {
 fn planned_spec(h: &Harness) -> (String, std::path::PathBuf) {
     let project = Uuid::new_v4().to_string();
     let requirement = Uuid::new_v4().to_string();
-    h.api("POST","/api/projects",json!({"previous":null,"project":{"id":project,"name":"Runtime project","description":"","directories":[h.0.path()],"preferred_directory":h.0.path(),"requirements":[{"id":requirement,"title":"Runtime requirement","description":"","tasks":[]}]}}));
+    h.api("POST","/api/projects",json!({"previous":null,"project":{"id":project,"name":"Runtime project","description":"","directories":[h.0.path()],"preferred_directory":h.0.path(),"requirements":[{"id":requirement,"title":"Runtime requirement","description":""}]}}));
     let spec=h.api("POST","/api/specs",json!({"requirement_id":requirement,"title":"Spec runtime","description":"Sequential implementation and acceptance"}))["spec"].clone();
     let id = spec["id"].as_str().unwrap().to_string();
     let directory =
@@ -229,18 +253,16 @@ fn planned_spec(h: &Harness) -> (String, std::path::PathBuf) {
             .len(),
         12
     );
-    let plan = json!({"criteria":[{"id":"AC-01","text":"First behaviour passes"},{"id":"AC-02","text":"Second behaviour passes"}],"tasks":[{"id":"T-01","title":"First coding task","description":"Implement behaviour one","acceptance_ids":["AC-01"]},{"id":"T-02","title":"Second coding task","description":"Implement behaviour two","acceptance_ids":["AC-02"]}]});
     for (file, content) in [
         (
             "requirements.md",
-            "# Requirements\nExpected behaviour".into(),
+            "# Requirements\n\n## Acceptance Criteria\n- AC-01: First behaviour passes\n- AC-02: Second behaviour passes\n",
         ),
         ("design.md", "# Design\nTechnical constraints".into()),
         (
             "tasks.md",
-            "- [ ] T-01 First task\n- [ ] T-02 Second task".into(),
+            "- [ ] T-01 First coding task\n  Implement behaviour one\n  Acceptance: AC-01\n- [ ] T-02 Second coding task\n  Implement behaviour two\n  Acceptance: AC-02\n",
         ),
-        ("plan.json", serde_json::to_string(&plan).unwrap()),
     ] {
         h.api(
             "POST",
@@ -248,14 +270,1197 @@ fn planned_spec(h: &Harness) -> (String, std::path::PathBuf) {
             json!({"content":content}),
         );
     }
-    for action in ["approve_requirements", "approve_design"] {
-        h.api(
-            "POST",
-            &format!("/api/specs/{id}/action"),
-            json!({"action":action}),
+    h.set_spec_phase(&id, "design");
+    h.set_spec_phase(&id, "tasks");
+    (id, directory)
+}
+
+#[test]
+fn native_workspace_defaults_to_type_directory_and_projects_use_their_preferred_directory() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    let executable =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workflow_agent.py");
+    for provider in ["codex", "pi"] {
+        h.ok(&[
+            "agent",
+            "add",
+            provider,
+            provider,
+            "--executable",
+            executable.to_str().unwrap(),
+        ]);
+        h.ok(&["agent", "up", provider]);
+        let agent: Value = serde_json::from_str(&h.ok(&["agent", "inspect", provider])).unwrap();
+        assert!(agent["directory"].is_null());
+        let run = h.start(provider, "normal", None);
+        assert_eq!(
+            run["working_directory"],
+            json!(
+                h.0.path()
+                    .join("agents")
+                    .join(provider)
+                    .canonicalize()
+                    .unwrap()
+            )
+        );
+        h.wait(&run, &["completed"]);
+    }
+
+    let first = h.0.path().join("first");
+    let preferred = h.0.path().join("preferred");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&preferred).unwrap();
+    let mut pi: Value = serde_json::from_str(&h.ok(&["agent", "inspect", "pi"])).unwrap();
+    pi["directory"] = json!(first);
+    h.api("PUT", "/api/agents/pi", pi);
+    let standalone = h.start("pi", "normal", None);
+    assert_eq!(
+        standalone["working_directory"],
+        json!(first.canonicalize().unwrap())
+    );
+    h.wait(&standalone, &["completed"]);
+    let requirement = Uuid::new_v4();
+    h.api("POST", "/api/projects", json!({"previous":null,"project":{
+        "id":Uuid::new_v4(),"name":"Two workspaces","directories":[first,preferred],
+        "preferred_directory":preferred,"requirements":[{"id":requirement,"title":"Workspace test"}]
+    }}));
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"main_agent":"codex","coding_agents":["pi"],"automatic":false}),
+    );
+    let chat = h.api(
+        "POST",
+        &format!("/api/requirements/{requirement}/chat"),
+        json!({"prompt":"添加任务：验证工作目录","request_id":Uuid::new_v4()}),
+    )["run"]
+        .clone();
+    let expected = json!(preferred.canonicalize().unwrap());
+    assert_eq!(chat["working_directory"], expected);
+    h.wait(&chat, &["completed"]);
+
+    let workflow = h.workflow();
+    let task = workflow["tasks"][0]["id"].as_str().unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task}/action"),
+        json!({"action":"start"}),
+    );
+    let done = h.wait_workflow(|state| state["tasks"][0]["status"] == "done");
+    let run_id = done["tasks"][0]["last_run_id"].as_str().unwrap();
+    assert_eq!(
+        h.api("GET", &format!("/api/runs/{run_id}"), Value::Null)["run"]["working_directory"],
+        expected
+    );
+}
+
+#[test]
+fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() {
+    use sha2::{Digest, Sha256};
+
+    let h = Harness::new();
+    let original_dir = h.0.path().join("native-config");
+    std::fs::create_dir(&original_dir).unwrap();
+    let original = "model = \"fixture-default\"\nnotify = [\"desktop\"]\n[mcp_servers.desktop]\ncommand = \"open\"\n";
+    std::fs::write(original_dir.join("config.toml"), original).unwrap();
+    std::fs::write(
+        original_dir.join("settings.json"),
+        r#"{"defaultModel":"pi-default","defaultProvider":"fixture","defaultThinkingLevel":"medium","theme":"dark","packages":["desktop"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        original_dir.join("models.json"),
+        r#"{"providers":{"fixture":{"models":[]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(original_dir.join("auth.json"), "{}").unwrap();
+    h.ok(&["daemon", "start"]);
+    h.add_native("codex", "fast");
+    h.add_native("codex", "deep");
+    h.add_native("codex", "unrestricted");
+    h.add_native("pi", "helper");
+    let files = h.api("GET", "/api/agent-types/codex", Value::Null);
+    let imported = files["files"][0]["content"].as_str().unwrap();
+    assert!(imported.contains("fixture-default"));
+    assert!(!imported.contains("desktop"));
+    let endpoint = "/api/agent-types/codex/config.toml";
+    for (previous, content) in [(imported, "invalid ["), ("stale", "")] {
+        assert_eq!(
+            h.http(
+                "PUT",
+                endpoint,
+                json!({ "previous":previous,"content":content })
+            )
+            .0,
+            400
         );
     }
-    (id, directory)
+    let changed = "model = \"shared-edited\"\nmodel_reasoning_effort = \"medium\"\nsandbox_mode = \"read-only\"\napproval_policy = \"never\"\n";
+    let saved = h.api(
+        "PUT",
+        endpoint,
+        json!({ "previous":imported,"content":changed }),
+    );
+    assert_eq!(saved["defaults"]["model"], "shared-edited");
+    assert_eq!(saved["defaults"]["reasoning_effort"], "medium");
+    assert_eq!(saved["defaults"]["permissions"], "full_access");
+    assert_eq!(
+        h.api("GET", "/api/agent-types/codex/defaults", Value::Null),
+        saved["defaults"]
+    );
+    assert_eq!(
+        h.api("GET", "/api/agent-types/codex", Value::Null)["files"][0]["content"],
+        changed
+    );
+    assert_eq!(
+        std::fs::read_to_string(original_dir.join("config.toml")).unwrap(),
+        original
+    );
+    let pi = h.api("GET", "/api/agent-types/pi", Value::Null);
+    assert_eq!(
+        serde_json::from_str::<Value>(pi["files"][1]["content"].as_str().unwrap()).unwrap(),
+        json!({"defaultModel":"pi-default","defaultProvider":"fixture","defaultThinkingLevel":"medium"})
+    );
+    assert_eq!(
+        pi["defaults"],
+        json!({"model":"pi-default","model_provider":"fixture","reasoning_effort":"medium","permissions":"full_access"})
+    );
+    assert!(
+        pi["files"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("fixture")
+    );
+    assert!(!h.0.path().join("agents/pi/auth.json").exists());
+    let prior = h.start("deep", "normal", None);
+    let prior_native_id = h.wait(&prior, &["completed"])["run"]["native_session_id"].clone();
+    let prior_session = prior["session_id"].as_str().unwrap();
+    let previous = h.ok(&["agent", "inspect", "deep"]);
+    let previous: rein::agents::AgentConfig = serde_json::from_str(&previous).unwrap();
+    let base_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&previous).unwrap())
+    );
+    let old_hash = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&json!([base_hash, h.0.path().join("agents/codex")])).unwrap()
+        )
+    );
+    h.sql(&format!(
+        "UPDATE local_sessions SET config_hash='{old_hash}' WHERE id='{prior_session}'"
+    ));
+    assert_eq!(
+        h.http(
+            "PUT",
+            "/api/agent-types/pi/permissions",
+            json!({"permissions":"read_only"})
+        )
+        .0,
+        400
+    );
+    h.api(
+        "PUT",
+        "/api/agent-types/codex/permissions",
+        json!({"permissions":"read_only"}),
+    );
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(
+        h.api("GET", "/api/agent-types/codex/defaults", Value::Null)["permissions"],
+        "read_only"
+    );
+    for (name, model, effort, permissions, sandbox, approval) in [
+        (
+            "fast",
+            "fixture-fast",
+            "low",
+            Some("workspace_write"),
+            "workspace-write",
+            "on-request",
+        ),
+        (
+            "deep",
+            "fixture-deep",
+            "high",
+            None,
+            "read-only",
+            "on-request",
+        ),
+        (
+            "unrestricted",
+            "fixture-full",
+            "high",
+            Some("full_access"),
+            "danger-full-access",
+            "never",
+        ),
+        ("helper", "pi-model", "medium", None, "", ""),
+    ] {
+        let mut config: Value = serde_json::from_str(&h.ok(&["agent", "inspect", name])).unwrap();
+        config["model"] = json!(model);
+        config["reasoning_effort"] = json!(effort);
+        config["permissions"] = json!(permissions);
+        let saved = h.api("PUT", &format!("/api/agents/{name}"), config);
+        assert_eq!(
+            saved["agent"].get("permissions"),
+            permissions.map(|p| json!(p)).as_ref()
+        );
+        let session = (name == "deep").then_some(prior_session);
+        let run = h.start(name, "normal", session);
+        let finished = h.wait(&run, &["completed", "failed"]);
+        assert_eq!(finished["run"]["state"], "completed", "{finished}");
+        if session.is_some() {
+            assert_eq!(finished["run"]["native_session_id"], prior_native_id);
+        }
+        let trace: Vec<Value> = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let last = &trace
+            .iter()
+            .rev()
+            .find(|entry| entry["startup"].is_object())
+            .unwrap()["startup"];
+        let provider = if name == "helper" { "pi" } else { "codex" };
+        assert_eq!(
+            std::path::Path::new(last["configHome"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            h.0.path()
+                .join("agents")
+                .join(provider)
+                .canonicalize()
+                .unwrap()
+        );
+        let args = last["args"].as_array().unwrap();
+        if provider == "codex" {
+            assert!(args.contains(&json!(format!("model_reasoning_effort=\"{effort}\""))));
+            let method = if session.is_some() {
+                "thread/resume"
+            } else {
+                "thread/start"
+            };
+            let params = &trace
+                .iter()
+                .rev()
+                .find(|entry| entry["request"]["method"] == method)
+                .unwrap()["request"]["params"];
+            assert_eq!(params["model"], model);
+            assert_eq!(params["sandbox"], sandbox);
+            assert_eq!(params["approvalPolicy"], approval);
+        } else {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == [json!("--model"), json!(model)])
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == [json!("--thinking"), json!(effort)])
+            );
+        }
+    }
+    for changed in [
+        json!({"name":"deep","provider":"pi"}),
+        json!({"name":"deep","provider":"codex","a2a":{"url":"http://127.0.0.1:9/a2a"}}),
+    ] {
+        h.api("PUT", "/api/agents/deep", changed);
+        let (status, error) = h.http(
+            "POST", "/api/runs",
+            json!({"agent_id":"deep","prompt":"continue","session_id":prior_session,"request_id":Uuid::new_v4()}),
+        );
+        assert_eq!(status, 400);
+        assert!(error.to_string().contains("different execution backend"));
+    }
+}
+
+#[test]
+fn agents_default_to_rein_skills_and_can_opt_into_native_compatibility() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    for provider in ["codex", "pi"] {
+        h.add_native(provider, provider);
+        let native =
+            h.0.path()
+                .join(format!("agents/{provider}/skills/native-only"));
+        let project =
+            h.0.path()
+                .join(provider)
+                .join(".agents/skills/project-only");
+        let managed = h.0.path().join("skills/rein-only");
+        for (root, name) in [
+            (&native, "native-only"),
+            (&project, "project-only"),
+            (&managed, "rein-only"),
+        ] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(
+                root.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Test skill\n---\nTest"),
+            )
+            .unwrap();
+        }
+        let endpoint = format!("/api/agents/{provider}/skills");
+        let status = h.api("GET", &endpoint, Value::Null);
+        assert_eq!(status["names"], json!(["rein-only", "rein-spec"]));
+        assert_eq!(status["rein_spec_installed"], false);
+        let run = h.start(provider, "normal", None);
+        h.wait(&run, &["completed"]);
+        let trace: Vec<Value> = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        if provider == "codex" {
+            let params = &trace
+                .iter()
+                .rev()
+                .find(|record| record["request"]["method"] == "thread/start")
+                .unwrap()["request"]["params"];
+            let selection = params["config"]["skills.config"].as_array().unwrap();
+            for (manifest, enabled) in [
+                (native.join("SKILL.md"), false),
+                (project.join("SKILL.md"), false),
+                (managed.join("SKILL.md"), true),
+            ] {
+                assert!(
+                    selection.iter().any(|skill| std::path::Path::new(
+                        skill["path"].as_str().unwrap()
+                    )
+                    .canonicalize()
+                    .unwrap()
+                        == manifest.canonicalize().unwrap()
+                        && skill["enabled"] == enabled),
+                    "{selection:?}"
+                );
+            }
+        } else {
+            let args = trace
+                .iter()
+                .rev()
+                .find_map(|record| record["startup"]["args"].as_array())
+                .unwrap();
+            assert!(args.contains(&json!("--no-skills")));
+            assert!(args.contains(&json!(managed.join("SKILL.md").canonicalize().unwrap())));
+            assert!(!args.contains(&json!(native.join("SKILL.md").canonicalize().unwrap())));
+        }
+        let mut config: Value =
+            serde_json::from_str(&h.ok(&["agent", "inspect", provider])).unwrap();
+        assert!(config.get("skill_directories").is_none());
+        config["skill_source"] = json!("native");
+        h.api("PUT", &format!("/api/agents/{provider}"), config);
+        let status = h.api("GET", &endpoint, Value::Null);
+        assert_eq!(status["names"], json!(["native-only", "project-only"]));
+        let run = h.start(provider, "normal", None);
+        h.wait(&run, &["completed"]);
+        let trace: Vec<Value> = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        if provider == "codex" {
+            assert!(
+                trace
+                    .iter()
+                    .rev()
+                    .find(|record| record["request"]["method"] == "thread/start")
+                    .unwrap()["request"]["params"]
+                    .get("config")
+                    .is_none()
+            );
+        } else {
+            assert!(
+                !trace
+                    .iter()
+                    .rev()
+                    .find_map(|record| record["startup"]["args"].as_array())
+                    .unwrap()
+                    .contains(&json!("--no-skills"))
+            );
+        }
+    }
+}
+
+#[test]
+fn native_skill_install_requires_consent_preserves_files_and_reports_shared_skills() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.add_native("pi", "helper");
+    h.add_native("pi", "second");
+    h.add_native("codex", "coder");
+    let pi = "/api/agents/helper/skills";
+    let before = h.api("GET", pi, Value::Null);
+    let target = h.0.path().join("agents/pi/skills/rein-spec");
+    assert_eq!(before["install_path"], target.to_str().unwrap());
+    assert_eq!(before["rein_spec_installed"], false);
+    let source = h.0.path().join("skills/rein-spec");
+    assert_eq!(before["source_path"], source.to_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(source.join("SKILL.md")).unwrap(),
+        rein::agents::skills::REIN_SPEC
+    );
+    std::fs::create_dir_all(source.join("references")).unwrap();
+    std::fs::write(source.join("references/SKILL.md"), "supporting resource").unwrap();
+    for name in ["design-feature.md", "design-bugfix.md"] {
+        assert!(source.join("references").join(name).is_file());
+    }
+    assert!(!target.exists());
+    assert_eq!(h.http("POST", pi, json!({"confirmed":false})).0, 400);
+    assert!(!target.exists());
+    let installed = h.api("POST", pi, json!({"confirmed":true}));
+    assert_eq!(installed["rein_spec_installed"], true);
+    for name in ["design-feature.md", "design-bugfix.md"] {
+        assert_eq!(
+            std::fs::read(target.join("references").join(name)).unwrap(),
+            std::fs::read(source.join("references").join(name)).unwrap()
+        );
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(target.join("references/SKILL.md")).unwrap(),
+        "supporting resource"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+        rein::agents::skills::REIN_SPEC
+    );
+    assert_eq!(
+        h.api("GET", "/api/agents/second/skills", Value::Null)["names"],
+        json!(["rein-spec"])
+    );
+    std::fs::write(
+        target.join("SKILL.md"),
+        "---\nname: rein-spec\ndescription: user edit\n---\nUser content",
+    )
+    .unwrap();
+    h.api("POST", pi, json!({"confirmed":true}));
+    assert!(
+        std::fs::read_to_string(target.join("SKILL.md"))
+            .unwrap()
+            .contains("User content")
+    );
+
+    // Codex's current user-level location is shared with Pi.
+    std::fs::remove_dir_all(&target).unwrap();
+    let edited_source = format!(
+        "{}\nLocal source customization\n",
+        rein::agents::skills::REIN_SPEC
+    );
+    std::fs::write(source.join("SKILL.md"), &edited_source).unwrap();
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(
+        std::fs::read_to_string(source.join("SKILL.md")).unwrap(),
+        edited_source
+    );
+    let codex = h.api(
+        "POST",
+        "/api/agents/coder/skills",
+        json!({"confirmed":true}),
+    );
+    assert_eq!(
+        codex["install_path"],
+        h.0.path()
+            .join(".agents/skills/rein-spec")
+            .to_str()
+            .unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.0.path().join(".agents/skills/rein-spec/SKILL.md")).unwrap(),
+        edited_source
+    );
+    let agents = h.api("GET", "/api/agents", Value::Null);
+    assert!(
+        agents["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["skills"]["rein_spec_installed"] == true)
+    );
+
+    h.ok(&[
+        "agent",
+        "add",
+        "pi",
+        "remote",
+        "--a2a",
+        "http://127.0.0.1:1",
+    ]);
+    let remote = h.api("GET", "/api/agents/remote/skills", Value::Null);
+    assert!(remote["install_path"].is_null());
+    assert!(remote["error"].as_str().unwrap().contains("远端"));
+    assert_eq!(
+        h.http(
+            "POST",
+            "/api/agents/remote/skills",
+            json!({"confirmed":true})
+        )
+        .0,
+        400
+    );
+}
+
+#[test]
+fn skill_install_refuses_existing_incomplete_or_symlinked_skill_directories() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.add_native("pi", "helper");
+    let target = h.0.path().join("agents/pi/skills/rein-spec");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("keep.txt"), "do not overwrite").unwrap();
+    assert_eq!(
+        h.http(
+            "POST",
+            "/api/agents/helper/skills",
+            json!({"confirmed":true})
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("keep.txt")).unwrap(),
+        "do not overwrite"
+    );
+    std::fs::remove_file(target.join("keep.txt")).unwrap();
+    std::fs::remove_dir(&target).unwrap();
+    let elsewhere = h.0.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &target).unwrap();
+    assert_eq!(
+        h.http(
+            "POST",
+            "/api/agents/helper/skills",
+            json!({"confirmed":true})
+        )
+        .0,
+        400
+    );
+    assert!(!elsewhere.join("SKILL.md").exists());
+    std::fs::remove_file(&target).unwrap();
+    let resource = h.0.path().join("skills/rein-spec/external");
+    std::os::unix::fs::symlink(&elsewhere, &resource).unwrap();
+    assert_eq!(
+        h.http(
+            "POST",
+            "/api/agents/helper/skills",
+            json!({"confirmed":true})
+        )
+        .0,
+        400
+    );
+    assert!(
+        !target.exists(),
+        "failed installs remove only their new directory"
+    );
+    assert!(!elsewhere.join("SKILL.md").exists());
+}
+
+#[test]
+fn single_agent_can_plan_code_and_review_sequentially() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "solo");
+    let settings = json!({"main_agent":"solo","coding_agents":["solo"],"review_agents":["solo"],"automatic":true});
+    h.api("POST", "/api/workflow/settings", settings.clone());
+    let (id, _) = planned_spec(&h);
+    h.set_spec_phase(&id, "building");
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_verification");
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"submit_verification"}),
+    );
+    let checked = h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_complete");
+    assert_eq!(checked["settings"], settings);
+    let tasks = checked["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 4);
+    assert!(
+        tasks
+            .iter()
+            .all(|t| t["agent_id"] == "solo" && t["status"] == "done" && t["attempt"] == 1)
+    );
+}
+
+#[test]
+fn spec_state_from_agent_controls_phases_without_matching_confirmation_words() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "planner");
+    h.api("POST", "/api/workflow/settings", json!({"main_agent":"planner","coding_agents":["planner"],"review_agents":["planner"],"automatic":false}));
+    let project = Uuid::new_v4();
+    let requirement = Uuid::new_v4();
+    h.api("POST", "/api/projects", json!({"previous":null,"project":{"id":project,"name":"Spec Builder","description":"","directories":[h.0.path()],"requirements":[{"id":requirement,"title":"Export","description":""}]}}));
+    h.ok(&["agent", "down", "planner"]);
+    let spec = h.api("POST", "/api/specs", json!({"requirement_id":requirement,"title":"Export repair","description":"大文件导出崩溃","kind":"bugfix","start":true}))["spec"].clone();
+    let id = spec["id"].as_str().unwrap();
+    assert_eq!(spec["kind"], "bugfix");
+    assert!(spec["error"].as_str().unwrap().contains("agent is down"));
+    assert!(spec["agent_id"].is_null());
+    h.ok(&["agent", "up", "planner"]);
+    let initial = h.api("POST", &format!("/api/specs/{id}/start"), Value::Null)["run"].clone();
+    let record = h.wait(&initial, &["completed"]);
+    assert!(record["prompt"].as_str().unwrap().contains("BUGFIX:"));
+    assert!(
+        record["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("Missing, empty or whitespace-only next documents are not generated yet")
+    );
+    assert!(
+        record["prompt"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("WORKING_DIR: {}", h.0.path().display()))
+    );
+    assert_eq!(
+        h.api("POST", &format!("/api/specs/{id}/start"), Value::Null)["run"]["run_id"],
+        initial["run_id"]
+    );
+    assert!(h.workflow()["specs"][0]["error"].is_null());
+    let chat = |prompt: &str, request: Uuid| {
+        h.api(
+            "POST",
+            &format!("/api/specs/{id}/chat"),
+            json!({"prompt":prompt,"request_id":request}),
+        )["run"]
+            .clone()
+    };
+    h.wait(&chat("先澄清", Uuid::new_v4()), &["completed"]);
+    let directory =
+        h.0.path()
+            .join("specs")
+            .join(spec["directory"].as_str().unwrap());
+    let progress: Value =
+        serde_json::from_str(&std::fs::read_to_string(directory.join(".spec-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(progress["blocking"], "需要保留旧的导出格式吗？");
+    h.wait(&chat("同意", Uuid::new_v4()), &["completed"]);
+    assert_eq!(
+        h.workflow()["specs"][0]["phase"],
+        "requirements",
+        "an answer to a clarification is not a stage approval"
+    );
+    let request = Uuid::new_v4();
+    h.ok(&["agent", "down", "planner"]);
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/specs/{id}/chat"),
+            json!({"prompt":"同意","request_id":request})
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        h.workflow()["specs"][0]["phase"],
+        "requirements",
+        "a failed continuation must not confirm the stage"
+    );
+    h.ok(&["agent", "up", "planner"]);
+    std::fs::write(directory.join("hold-planning"), "").unwrap();
+    let approved = chat("就按这个方案来吧", request);
+    h.wait_workflow(|_| {
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(directory.join(".spec-state.json")).unwrap())
+                .unwrap();
+        saved["phase"] == "design"
+    });
+    assert_eq!(
+        h.workflow()["specs"][0]["phase"],
+        "requirements",
+        "a still-running turn must not publish its state"
+    );
+    std::fs::remove_file(directory.join("hold-planning")).unwrap();
+    h.wait(&approved, &["completed"]);
+    h.wait_workflow(|state| state["specs"][0]["phase"] == "design");
+    assert_eq!(
+        chat("就按这个方案来吧", request)["run_id"],
+        approved["run_id"]
+    );
+    assert_eq!(
+        h.workflow()["specs"][0]["phase"],
+        "design",
+        "a network retry must not approve the next stage"
+    );
+    // The fixture records no approval for this wording; the daemon must not interpret it itself.
+    h.wait(&chat("确认设计", Uuid::new_v4()), &["completed"]);
+    assert_eq!(h.workflow()["specs"][0]["phase"], "design");
+    h.wait(
+        &chat("同意，但先补充权限要求", Uuid::new_v4()),
+        &["completed"],
+    );
+    assert_eq!(h.workflow()["specs"][0]["phase"], "design");
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/specs/{id}/chat"),
+            json!({"prompt":"确认设计","request_id":request})
+        )
+        .0,
+        400
+    );
+    std::fs::write(directory.join("tasks.md"), " \n\t").unwrap();
+    h.wait(
+        &chat("这个设计可以，往下做吧", Uuid::new_v4()),
+        &["completed"],
+    );
+    h.wait_workflow(|state| state["specs"][0]["phase"] == "tasks");
+    h.wait(
+        &chat("按这份任务计划执行吧", Uuid::new_v4()),
+        &["completed"],
+    );
+    let queued = h.wait_workflow(|state| state["tasks"].as_array().unwrap().len() == 1);
+    assert_eq!(queued["specs"][0]["phase"], "building");
+    assert_eq!(queued["tasks"][0]["status"], "todo");
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(directory.join(".spec-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["decisions"].as_array().unwrap().len(), 3);
+    assert_eq!(state["context"]["template"], "bugfix");
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(h.workflow()["specs"][0]["kind"], "bugfix");
+}
+
+#[test]
+fn spec_json_migration_preserves_files_and_rejects_invalid_state_without_dispatch() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    let (id, directory) = planned_spec(&h);
+    let path = directory.join(".spec-state.json");
+    let legacy = directory.join("spec-state.json");
+    let original = r#"{"phase":"tasks","awaiting_approval":true,"blocking":null}"#;
+    std::fs::write(&legacy, original).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    h.ok(&["daemon", "restart"]);
+    let migrated = h.api(
+        "GET",
+        &format!("/api/artifacts/{id}/.spec-state.json"),
+        Value::Null,
+    );
+    let mut state: Value = serde_json::from_str(migrated["content"].as_str().unwrap()).unwrap();
+    assert_eq!(state["phase"], "tasks");
+    assert_eq!(state["blocking"], "User review of tasks.md");
+    assert_eq!(state["context"]["template"], "feature");
+    assert_eq!(std::fs::read_to_string(&legacy).unwrap(), original);
+    state["blocking"] = json!("请确认兼容性要求");
+    state["decisions"] = json!([{"document":"design.md","decision":"approved"}]);
+    let saved = serde_json::to_string(&state).unwrap();
+    std::fs::write(&path, &saved).unwrap();
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    assert_eq!(
+        h.http(
+            "POST",
+            &format!("/api/artifacts/{id}/.spec-state.json"),
+            json!({"content":"{}"})
+        )
+        .0,
+        400
+    );
+    for invalid in [
+        "{\"phase\":".to_owned(),
+        serde_json::to_string(&json!({"phase":"complete","decisions":[],"blocking":null,"context":{"template":"feature"}})).unwrap(),
+        serde_json::to_string(&json!({"phase":"building","decisions":[],"blocking":null,"context":{"template":"bugfix"}})).unwrap(),
+    ] {
+        std::fs::write(&path, invalid).unwrap();
+        let snapshot = h.wait_workflow(|s| s["specs"][0]["error"].as_str().is_some_and(|error| error.starts_with(".spec-state.json:")));
+        assert_eq!(snapshot["specs"][0]["phase"], "tasks");
+        assert!(snapshot["tasks"].as_array().unwrap().is_empty());
+        std::fs::write(&path, &saved).unwrap();
+        h.wait_workflow(|s| s["specs"][0]["error"].is_null());
+    }
+    h.set_spec_phase(&id, "building");
+    h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
+    let published: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(published["phase"], "building");
+}
+
+#[test]
+fn markdown_tasks_submit_idempotently_report_interactions_and_sync_through_main_agent() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    for (provider, name) in [("pi", "planner"), ("codex", "coder"), ("pi", "reviewer")] {
+        h.workflow_agent(provider, name);
+    }
+    h.api("POST", "/api/workflow/settings", json!({"main_agent":"planner","coding_agents":["coder"],"review_agents":["reviewer"],"automatic":false}));
+    let (id, directory) = planned_spec(&h);
+    assert!(!directory.join("plan.json").exists());
+    let submit = format!("/api/specs/{id}/tasks");
+    assert_eq!(h.http("POST", &submit, json!({"plan_id":"T-02"})).0, 400);
+    h.set_spec_phase(&id, "building");
+    h.wait_workflow(|state| state["tasks"].as_array().unwrap().len() == 1);
+    let second = h.api("POST", &submit, json!({"plan_id":"T-02"}))["task"].clone();
+    assert_eq!(
+        h.api("POST", &submit, json!({"plan_id":"T-02"}))["task"]["id"],
+        second["id"]
+    );
+    assert_eq!(h.workflow()["tasks"].as_array().unwrap().len(), 2);
+    let task_id = second["id"].as_str().unwrap();
+    let approved_tasks = std::fs::read_to_string(directory.join("tasks.md")).unwrap();
+    std::fs::write(
+        directory.join("tasks.md"),
+        approved_tasks.replace("Second coding task", "Changed task scope"),
+    )
+    .unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task_id}/action"),
+        json!({"action":"start"}),
+    );
+    h.wait_workflow(|state| {
+        state["tasks"].as_array().unwrap().iter().any(|task| {
+            task["id"] == task_id
+                && task["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("approved execution snapshot"))
+        })
+    });
+    std::fs::write(directory.join("tasks.md"), approved_tasks).unwrap();
+    std::fs::write(directory.join("require-approval"), "").unwrap();
+    std::fs::write(directory.join("skip-document-update-once"), "").unwrap();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{task_id}/action"),
+        json!({"action":"start"}),
+    );
+    let waiting = h.wait_workflow(|state| {
+        state["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["kind"] == "waiting")
+    });
+    let notice = waiting["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["kind"] == "waiting")
+        .unwrap();
+    assert_eq!(notice["agent_id"], "coder");
+    assert!(notice["content"].as_str().unwrap().contains("@用户"));
+    let task = waiting["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == task_id)
+        .unwrap();
+    let run_id = task["run_id"].as_str().unwrap();
+    let record = h.api("GET", &format!("/api/runs/{run_id}"), Value::Null);
+    let prompt = record["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Run browser tests headlessly by default"));
+    assert!(prompt.contains("connect to the user's running browser"));
+    let interaction = record["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["event"]["type"] == "interaction")
+        .unwrap();
+    assert!(
+        !std::fs::read_to_string(directory.join("tasks.md"))
+            .unwrap()
+            .contains("[x]")
+    );
+    h.api("POST", &format!("/api/runs/{run_id}/reply"), json!({"attempt_id":record["run"]["attempt_id"],"interaction_id":interaction["event"]["interaction_id"],"command_id":Uuid::new_v4(),"response":{"decision":"accept"}}));
+    let failed =
+        h.wait_workflow(|state| {
+            state["messages"].as_array().unwrap().iter().any(|message| {
+                message["kind"] == "completed" && message["update_error"].is_string()
+            })
+        });
+    let finished = failed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["kind"] == "completed")
+        .unwrap();
+    assert_eq!(finished["agent_id"], "coder");
+    h.api(
+        "POST",
+        &format!(
+            "/api/task-messages/{}/retry",
+            finished["id"].as_str().unwrap()
+        ),
+        Value::Null,
+    );
+    h.wait_workflow(|state| {
+        state["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == finished["id"] && message["update_done"] == true)
+    });
+    let tasks = std::fs::read_to_string(directory.join("tasks.md")).unwrap();
+    assert!(tasks.contains("- [x] T-02"));
+    assert!(tasks.contains("- [ ] T-01"));
+    std::fs::remove_file(directory.join("require-approval")).unwrap();
+    let first = h.workflow()["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["plan_id"] == "T-01")
+        .unwrap()
+        .clone();
+    h.api(
+        "POST",
+        &format!("/api/tasks/{}/action", first["id"].as_str().unwrap()),
+        json!({"action":"start"}),
+    );
+    h.wait_workflow(|state| state["specs"][0]["phase"] == "ready_verification");
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"submit_verification"}),
+    );
+    h.api("POST", "/api/workflow/settings", json!({"main_agent":"planner","coding_agents":["coder"],"review_agents":["reviewer"],"automatic":true}));
+    let complete = h.wait_workflow(|state| {
+        state["specs"][0]["phase"] == "ready_complete"
+            && state["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["kind"] == "completed")
+                .all(|message| message["update_done"] == true)
+    });
+    let tasks = std::fs::read_to_string(directory.join("tasks.md")).unwrap();
+    assert!(tasks.contains("- [x] T-01") && tasks.contains("- [x] T-02"));
+    assert!(tasks.contains("- AC-01: passed") && tasks.contains("- AC-02: passed"));
+    let messages = complete["messages"].as_array().unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["kind"] == "completed" && message["agent_id"] == "reviewer")
+    );
+    assert!(
+        messages.iter().any(
+            |message| message["kind"] == "document_updated" && message["agent_id"] == "planner"
+        )
+    );
+    let keys: std::collections::HashSet<_> = messages
+        .iter()
+        .map(|message| message["event_key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys.len(), messages.len());
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(h.workflow()["messages"], complete["messages"]);
+}
+
+#[test]
+fn spec_chat_revisions_rewind_and_require_a_choice_for_existing_next_documents() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "planner");
+    h.api(
+        "POST",
+        "/api/workflow/settings",
+        json!({"main_agent":"planner","coding_agents":[],"review_agents":[],"automatic":false}),
+    );
+    let (id, directory) = planned_spec(&h);
+    let original_tasks = std::fs::read_to_string(directory.join("tasks.md")).unwrap();
+    let chat = |prompt: &str, options: Value| {
+        let run = h.api(
+            "POST",
+            &format!("/api/specs/{id}/chat"),
+            json!({"prompt":prompt,"request_id":Uuid::new_v4(),"options":options}),
+        )["run"]
+            .clone();
+        h.wait(&run, &["completed"]);
+        run
+    };
+    chat("fixture-edit-design", json!({}));
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "design");
+    chat("确认设计，拆分任务", json!({}));
+    let progress: Value =
+        serde_json::from_str(&std::fs::read_to_string(directory.join(".spec-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(progress["phase"], "design");
+    assert!(
+        progress["blocking"]
+            .as_str()
+            .unwrap()
+            .starts_with("Choose next document:")
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("tasks.md")).unwrap(),
+        original_tasks
+    );
+    chat("保留现有文档", json!({}));
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "tasks");
+    chat("fixture-edit-requirements", json!({}));
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "requirements");
+    chat("确认需求，继续设计", json!({"next_document":"modify"}));
+    h.wait_workflow(|s| s["specs"][0]["phase"] == "design");
+    assert!(
+        std::fs::read_to_string(directory.join("design.md"))
+            .unwrap()
+            .contains("重新生成的设计")
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("tasks.md")).unwrap(),
+        original_tasks
+    );
+    std::fs::write(directory.join("violate-keep-once"), "").unwrap();
+    chat("确认设计，拆分任务", json!({"next_document":"keep"}));
+    let rejected = h.wait_workflow(|s| {
+        s["specs"][0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("未按保留要求"))
+    });
+    assert_eq!(rejected["specs"][0]["phase"], "design");
+    assert!(rejected["tasks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn spec_edits_preserve_execution_standards_and_document_confirmation_versions() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.workflow_agent("pi", "coder");
+    h.workflow_agent("codex", "reviewer");
+    let settings = json!({"main_agent":"coder","coding_agents":["coder"],"review_agents":["reviewer"],"automatic":false});
+    h.api("POST", "/api/workflow/settings", settings.clone());
+    let (id, directory) = planned_spec(&h);
+    let artifact = |name: &str| format!("/api/artifacts/{id}/{name}");
+    assert_eq!(
+        h.api("GET", &artifact("requirements.md"), Value::Null)["confirmed"],
+        true
+    );
+    assert_eq!(
+        h.api("GET", &artifact("design.md"), Value::Null)["confirmed"],
+        true
+    );
+    assert_eq!(
+        h.api("GET", &artifact("tasks.md"), Value::Null)["confirmed"],
+        false
+    );
+    h.set_spec_phase(&id, "building");
+    let frozen = h.workflow()["specs"][0]["plan"].clone();
+    let original = std::fs::read_to_string(directory.join("requirements.md")).unwrap();
+    let edited = original.replace(
+        "First behaviour passes",
+        "Document-only new acceptance wording",
+    );
+    h.api(
+        "POST",
+        &artifact("requirements.md"),
+        json!({"content":edited,"previous":original}),
+    );
+    assert_eq!(h.workflow()["specs"][0]["plan"], frozen);
+    assert_eq!(
+        h.api("GET", &artifact("requirements.md"), Value::Null)["confirmed"],
+        false
+    );
+    assert_eq!(
+        h.http(
+            "POST",
+            &artifact("requirements.md"),
+            json!({"content":"conflicting editor","previous":original})
+        )
+        .0,
+        400
+    );
+    let mut automatic = settings.clone();
+    automatic["automatic"] = true.into();
+    h.api("POST", "/api/workflow/settings", automatic);
+    h.wait_workflow(|state| state["specs"][0]["phase"] == "ready_verification");
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"submit_verification"}),
+    );
+    let verified = h.wait_workflow(|state| state["specs"][0]["phase"] == "ready_complete");
+    assert!(verified["tasks"].as_array().unwrap().iter().any(|task| task["role"] == "review" && task["description"] == "First behaviour passes"));
+    assert_eq!(verified["specs"][0]["plan"], frozen);
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"complete"}),
+    );
+    h.wait_workflow(|state| {
+        state["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["kind"] == "completed")
+            .all(|message| message["update_done"] == true)
+    });
+    for name in ["design.md", "tasks.md"] {
+        let previous = std::fs::read_to_string(directory.join(name)).unwrap();
+        h.api(
+            "POST",
+            &artifact(name),
+            json!({"content":format!("{previous}\nManual document note\n"),"previous":previous}),
+        );
+    }
+    assert_eq!(h.workflow()["specs"][0]["phase"], "complete");
+    let tasks = h.workflow()["tasks"].clone();
+    let chat = |prompt: &str, options: Value, request_id: Uuid| {
+        h.api(
+            "POST",
+            &format!("/api/specs/{id}/chat"),
+            json!({"prompt":prompt,"request_id":request_id,"options":options}),
+        )["run"]
+            .clone()
+    };
+    let run = chat(
+        "审阅手动保存的需求",
+        json!({"edited_document":"requirements.md"}),
+        Uuid::new_v4(),
+    );
+    h.wait(&run, &["completed"]);
+    h.wait_workflow(|state| state["specs"][0]["document_run_id"] == run["run_id"]);
+    let progress: Value =
+        serde_json::from_str(&std::fs::read_to_string(directory.join(".spec-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(progress["phase"], "requirements");
+    let design_before = std::fs::read_to_string(directory.join("design.md")).unwrap();
+    let keep_id = Uuid::new_v4();
+    let keep = chat(
+        "确认需求，继续设计",
+        json!({"next_document":"keep"}),
+        keep_id,
+    );
+    h.wait(&keep, &["completed"]);
+    h.wait_workflow(|state| state["specs"][0]["document_run_id"] == keep["run_id"]);
+    assert_eq!(
+        chat(
+            "确认需求，继续设计",
+            json!({"next_document":"keep"}),
+            keep_id
+        )["run_id"],
+        keep["run_id"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("design.md")).unwrap(),
+        design_before
+    );
+    let modify = chat(
+        "确认设计，拆分任务",
+        json!({"next_document":"modify"}),
+        Uuid::new_v4(),
+    );
+    h.wait(&modify, &["completed"]);
+    let after = h.wait_workflow(|state| state["specs"][0]["document_run_id"] == modify["run_id"]);
+    assert_eq!(after["specs"][0]["phase"], "complete");
+    assert_eq!(after["specs"][0]["plan"], frozen);
+    assert_eq!(after["tasks"], tasks);
+    assert_eq!(
+        std::fs::read_to_string(directory.join("requirements.md")).unwrap(),
+        edited
+    );
+    assert!(
+        std::fs::read_to_string(directory.join("tasks.md"))
+            .unwrap()
+            .contains("修订实现")
+    );
+    assert_eq!(
+        h.api("GET", &artifact("tasks.md"), Value::Null)["confirmed"],
+        false
+    );
+    h.ok(&["daemon", "restart"]);
+    assert_eq!(h.workflow()["specs"][0]["plan"], frozen);
+    assert_eq!(
+        h.api("GET", &artifact("tasks.md"), Value::Null)["confirmed"],
+        false
+    );
 }
 
 #[test]
@@ -271,16 +1476,12 @@ fn workflow_roles_sequence_handoffs_and_responsible_task_repair() {
         h.http(
             "POST",
             "/api/workflow/settings",
-            json!({"coding_agents":["coder"],"review_agents":["coder"],"automatic":true})
+            json!({"coding_agents":["coder","coder"],"review_agents":["coder"],"automatic":true})
         )
         .0,
         400
     );
-    h.api(
-        "POST",
-        &format!("/api/specs/{id}/action"),
-        json!({"action":"build"}),
-    );
+    h.set_spec_phase(&id, "building");
     let state = h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
     assert_eq!(state["tasks"][0]["status"], "todo");
     assert!(state["tasks"][0]["agent_id"].is_null());
@@ -354,20 +1555,17 @@ fn workflow_unlinked_acceptance_failure_creates_one_repair_task() {
     h.workflow_agent("pi", "coder");
     h.workflow_agent("codex", "reviewer");
     let (id, directory) = planned_spec(&h);
-    let plan_path = directory.join("plan.json");
-    let mut plan: Value = serde_json::from_slice(&std::fs::read(&plan_path).unwrap()).unwrap();
-    plan["tasks"][0]["acceptance_ids"] = json!([]);
-    std::fs::write(plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
+    let tasks_path = directory.join("tasks.md");
+    let tasks = std::fs::read_to_string(&tasks_path)
+        .unwrap()
+        .replace("  Acceptance: AC-01\n", "");
+    std::fs::write(tasks_path, tasks).unwrap();
     h.api(
         "POST",
         "/api/workflow/settings",
         json!({"coding_agents":["coder"],"review_agents":["reviewer"],"automatic":true}),
     );
-    h.api(
-        "POST",
-        &format!("/api/specs/{id}/action"),
-        json!({"action":"build"}),
-    );
+    h.set_spec_phase(&id, "building");
     h.wait_workflow(|s| s["specs"][0]["phase"] == "ready_verification");
     std::fs::write(directory.join("review-fail-unlinked-once"), "").unwrap();
     h.api(
@@ -409,14 +1607,16 @@ fn workflow_artifact_conflicts_and_requirement_chat_creation_are_safe() {
         .0,
         400
     );
+    let confirmed_requirements =
+        std::fs::read_to_string(directory.join("requirements.md")).unwrap();
     assert_eq!(
         h.http(
             "POST",
             &format!("/api/artifacts/{id}/requirements.md"),
-            json!({"content":"replace confirmed requirements"})
+            json!({"content":format!("{confirmed_requirements}\nManual document note\n"),"previous":confirmed_requirements})
         )
         .0,
-        400
+        200
     );
     let original = h.api("GET", &format!("/api/artifacts/{id}/tasks.md"), Value::Null)["content"]
         .as_str()
@@ -458,6 +1658,17 @@ fn workflow_artifact_conflicts_and_requirement_chat_creation_are_safe() {
         .unwrap()
         .to_string();
     let request = Uuid::new_v4().to_string();
+    let (status, _) = h.http(
+        "POST",
+        &format!("/api/requirements/{requirement}/chat"),
+        json!({
+            "prompt":"添加任务：过期会话不应创建任务",
+            "request_id":Uuid::new_v4(),
+            "session_id":Uuid::new_v4()
+        }),
+    );
+    assert_eq!(status, 400);
+    assert_eq!(h.workflow()["tasks"].as_array().unwrap().len(), 0);
     let body = json!({"prompt":"添加任务：需求对话中的直接任务","request_id":request});
     let first = h.api(
         "POST",
@@ -491,11 +1702,7 @@ fn workflow_missing_handoff_manual_retry_pause_and_restart_do_not_skip_work() {
         "/api/workflow/settings",
         json!({"coding_agents":["coder"],"automatic":true}),
     );
-    h.api(
-        "POST",
-        &format!("/api/specs/{id}/action"),
-        json!({"action":"build"}),
-    );
+    h.set_spec_phase(&id, "building");
     let failed = h.wait_workflow(|s| s["tasks"][0]["error"].is_string());
     assert_eq!(failed["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(failed["tasks"][0]["status"], "todo");
@@ -545,11 +1752,7 @@ fn workflow_dispatch_artifact_error_returns_to_pending_instead_of_leaving_a_fals
         "/api/workflow/settings",
         json!({"coding_agents":["coder"],"automatic":false}),
     );
-    h.api(
-        "POST",
-        &format!("/api/specs/{id}/action"),
-        json!({"action":"build"}),
-    );
+    h.set_spec_phase(&id, "building");
     h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
     let moved = directory.with_extension("moved");
     std::fs::rename(&directory, &moved).unwrap();
@@ -584,11 +1787,7 @@ fn workflow_stop_finds_execution_even_when_persisting_the_run_link_failed() {
         "/api/workflow/settings",
         json!({"coding_agents":["coder"],"automatic":false}),
     );
-    h.api(
-        "POST",
-        &format!("/api/specs/{id}/action"),
-        json!({"action":"build"}),
-    );
+    h.set_spec_phase(&id, "building");
     h.wait_workflow(|s| s["tasks"].as_array().unwrap().len() == 1);
     h.sql("CREATE TRIGGER fail_task_link BEFORE UPDATE ON workflow_state WHEN json_type(new.snapshot,'$.tasks[0].run_id')='text' BEGIN SELECT RAISE(ABORT,'injected run-link failure'); END");
     h.api(
@@ -600,6 +1799,12 @@ fn workflow_stop_finds_execution_even_when_persisting_the_run_link_failed() {
         s["tasks"][0]["request_id"].is_string() && s["tasks"][0]["run_id"].is_null()
     });
     let task = state["tasks"][0]["id"].as_str().unwrap();
+    let (status, _) = h.http("DELETE", &format!("/api/tasks/{task}"), Value::Null);
+    assert!(
+        status >= 400,
+        "active run with missing task link must block deletion"
+    );
+
     h.api(
         "POST",
         &format!("/api/tasks/{task}/action"),
@@ -612,6 +1817,20 @@ fn workflow_stop_finds_execution_even_when_persisting_the_run_link_failed() {
     let stopped = h.wait_workflow(|s| s["tasks"][0]["status"] == "todo");
     assert_eq!(stopped["tasks"][0]["paused"], true);
     assert_eq!(stopped["tasks"].as_array().unwrap().len(), 1);
+    let document = std::fs::read(directory.join("tasks.md")).unwrap();
+    let history = h.api("GET", "/api/agents/coder/history", Value::Null);
+    h.api("DELETE", &format!("/api/tasks/{task}"), Value::Null);
+    h.ok(&["daemon", "restart"]);
+    thread::sleep(Duration::from_millis(900));
+    let deleted = h.workflow();
+    assert!(deleted["tasks"].as_array().unwrap().is_empty());
+    assert_eq!(deleted["specs"][0]["paused"], true);
+    assert_eq!(std::fs::read(directory.join("tasks.md")).unwrap(), document);
+    assert_eq!(
+        h.api("GET", "/api/agents/coder/history", Value::Null),
+        history
+    );
+    assert!(directory.exists());
 }
 
 #[test]
@@ -780,6 +1999,10 @@ fn native_streams_resume_after_restart_and_idempotency() {
                 .any(|e| e["event"]["text"] == "Hello 1" && e["event"]["complete"] == true)
         );
         assert_eq!(events.last().unwrap()["event"]["execution_stopped"], true);
+        let mut config: Value =
+            serde_json::from_str(&h.ok(&["agent", "inspect", provider])).unwrap();
+        config["model"] = json!("next-model");
+        h.api("PUT", &format!("/api/agents/{provider}"), config);
         h.ok(&["daemon", "restart"]);
         assert_eq!(h.get(&run)["events"], record["events"]);
         assert_eq!(
@@ -806,6 +2029,22 @@ fn native_streams_resume_after_restart_and_idempotency() {
             Value::Null,
         );
         assert_eq!(history["runs"].as_array().unwrap().len(), 2);
+        if provider == "codex" {
+            let trace = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl")).unwrap();
+            for method in ["thread/start", "thread/resume"] {
+                let request = trace
+                    .lines()
+                    .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                    .find(|entry| entry["request"]["method"] == method)
+                    .unwrap()["request"]
+                    .clone();
+                assert_eq!(request["params"]["sandbox"], "danger-full-access");
+                assert_eq!(request["params"]["approvalPolicy"], "never");
+                if method == "thread/resume" {
+                    assert_eq!(request["params"]["model"], "next-model");
+                }
+            }
+        }
     }
     h.processes_stopped();
 }
@@ -921,7 +2160,7 @@ fn projects_are_files_conflicting_edits_are_rejected_and_origins_are_checked() {
     let h = Harness::new();
     h.ok(&["daemon", "start"]);
     let id = Uuid::new_v4();
-    let project = json!({"id":id,"name":"本机项目","description":"persisted","directories":[],"preferred_directory":null,"requirements":[{"id":Uuid::new_v4(),"title":"需求","description":"","tasks":[{"id":Uuid::new_v4(),"title":"任务","status":"todo"}]}]});
+    let project = json!({"id":id,"name":"本机项目","description":"persisted","directories":[],"preferred_directory":null,"requirements":[{"id":Uuid::new_v4(),"title":"需求","description":""}]});
     assert_eq!(
         h.api("POST", "/api/projects", json!({"project":project}))["project"],
         project
@@ -974,6 +2213,82 @@ fn projects_are_files_conflicting_edits_are_rejected_and_origins_are_checked() {
             .unwrap();
         assert_eq!(response.headers()["cache-control"], "no-store");
         assert!(response.headers().contains_key("content-security-policy"));
+    });
+}
+
+#[test]
+fn console_state_sse_sends_snapshots_changes_and_recovers_agent_file_errors() {
+    async fn next_event(response: &mut reqwest::Response, buffer: &mut Vec<u8>) -> (String, Value) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(end) = buffer.windows(2).position(|bytes| bytes == b"\n\n") {
+                    let bytes: Vec<_> = buffer.drain(..end + 2).collect();
+                    let frame = std::str::from_utf8(&bytes).unwrap();
+                    let name = frame.lines().find_map(|line| line.strip_prefix("event: "));
+                    let data = frame.lines().find_map(|line| line.strip_prefix("data: "));
+                    if let (Some(name), Some(data)) = (name, data) {
+                        return (name.to_string(), serde_json::from_str(data).unwrap());
+                    }
+                } else {
+                    buffer.extend_from_slice(&response.chunk().await.unwrap().expect("SSE closed"));
+                }
+            }
+        })
+        .await
+        .expect("SSE event timeout")
+    }
+
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.add_native("pi", "helper");
+    let url = h.url();
+    let path = h.0.path().join("agents/helper.json");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let client = reqwest::Client::new();
+        let mut response = client.get(format!("{url}/api/events")).send().await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        let mut buffer = Vec::new();
+        let (name, agents) = next_event(&mut response, &mut buffer).await;
+        assert_eq!(name, "agents");
+        assert_eq!(agents["agents"][0]["name"], "helper");
+        let (name, workflow) = next_event(&mut response, &mut buffer).await;
+        assert_eq!(name, "workflow");
+        assert!(workflow["tasks"].as_array().unwrap().is_empty());
+        assert!(tokio::time::timeout(
+            Duration::from_millis(1200),
+            next_event(&mut response, &mut buffer),
+        ).await.is_err(), "unchanged snapshots must not be resent");
+
+        client.post(format!("{url}/api/agents/helper/availability"))
+            .json(&json!({"enabled": false})).send().await.unwrap().error_for_status().unwrap();
+        let (name, agents) = next_event(&mut response, &mut buffer).await;
+        assert_eq!(name, "agents");
+        assert_eq!(agents["agents"][0]["enabled"], false);
+
+        let saved = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "invalid JSON").unwrap();
+        let (name, error) = next_event(&mut response, &mut buffer).await;
+        assert_eq!(name, "agents");
+        assert!(error["error"].as_str().unwrap().contains("parse"));
+        std::fs::write(&path, saved).unwrap();
+        let (name, recovered) = next_event(&mut response, &mut buffer).await;
+        assert_eq!(name, "agents");
+        assert_eq!(recovered, agents);
+
+        client.post(format!("{url}/api/workflow/settings"))
+            .json(&json!({"main_agent": "helper", "coding_agents": ["helper"], "review_agents": [], "automatic": false}))
+            .send().await.unwrap().error_for_status().unwrap();
+        let (name, workflow) = next_event(&mut response, &mut buffer).await;
+        assert_eq!(name, "workflow");
+        assert_eq!(workflow["settings"]["main_agent"], "helper");
+        assert_eq!(workflow["settings"]["automatic"], false);
+
+        drop(response);
+        let mut response = client.get(format!("{url}/api/events")).send().await.unwrap();
+        buffer.clear();
+        assert_eq!(next_event(&mut response, &mut buffer).await, ("agents".into(), agents));
+        assert_eq!(next_event(&mut response, &mut buffer).await, ("workflow".into(), workflow));
     });
 }
 
@@ -1172,94 +2487,195 @@ fn project_directories_default_to_first_validate_and_survive_restart() {
 }
 
 #[test]
-fn sdd_workflow_rejects_bypassed_gates_and_persists_artifacts() {
+fn project_config_has_no_tasks_and_cannot_overwrite_sqlite_tasks() {
     let h = Harness::new();
     h.ok(&["daemon", "start"]);
-    let ids: Vec<_> = (0..4).map(|_| Uuid::new_v4().to_string()).collect();
-    let tasks: Vec<_> = ["spec", "design", "tasks", "verification"]
-        .iter()
-        .enumerate()
-        .map(|(index, kind)| {
-            let mut value = json!({"id":ids[index],"title":kind,"type":kind,"status":"todo"});
-            if index > 0 {
-                value["depends_on"] = json!([ids[index - 1]]);
-            }
-            value
-        })
-        .collect();
-    let initial = json!({"id":Uuid::new_v4(),"name":"SDD","description":"","directories":[],"preferred_directory":null,"requirements":[{"id":Uuid::new_v4(),"title":"typed tasks","description":"","tasks":tasks}]});
-    let mut project = h.api("POST", "/api/projects", json!({"project":initial}))["project"].clone();
-    let save = |previous: &Value, next: Value| {
-        h.api(
+    let (spec_id, directory) = planned_spec(&h);
+    let project = h.api("GET", "/api/projects", Value::Null)["projects"][0].clone();
+    assert!(project["requirements"][0].get("tasks").is_none());
+    let task = h.api("POST", "/api/tasks", json!({"requirement_id":project["requirements"][0]["id"],"title":"SQLite task","role":"coding"}));
+    let workflow = h.workflow();
+    let document = std::fs::read(directory.join("tasks.md")).unwrap();
+    let mut invalid = project.clone();
+    invalid["requirements"][0]["tasks"] = json!([]);
+    assert!(
+        h.http(
             "POST",
             "/api/projects",
-            json!({"project":next,"previous":previous}),
-        )["project"]
-            .clone()
-    };
-    let reject = |previous: &Value, next: Value| {
-        assert_eq!(
-            h.http(
-                "POST",
-                "/api/projects",
-                json!({"project":next,"previous":previous})
-            )
-            .0,
-            400
+            json!({"project":invalid,"previous":project})
         )
-    };
-    let mut invalid = project.clone();
-    invalid["requirements"][0]["tasks"][1]["status"] = json!("running");
-    reject(&project, invalid);
-    let criterion = Uuid::new_v4();
-    for index in 0..3 {
-        let mut next = project.clone();
-        next["requirements"][0]["tasks"][index]["status"] = json!("running");
-        project = save(&project, next);
-        let mut next = project.clone();
-        let task = &mut next["requirements"][0]["tasks"][index];
-        match index {
-            0 => {
-                // A real document can exceed the old 64 KiB HTTP body limit after JSON encoding.
-                task["document"] = json!(format!("## 行为\n{}", "\"".repeat(40000)));
-                task["criteria"] = json!([{"id":criterion,"text":"expected behavior"}]);
-            }
-            1 => task["document"] = json!("Implementation boundaries and failure paths"),
-            _ => {
-                task["subtasks"] =
-                    json!([{"id":Uuid::new_v4(),"title":"implement","completed":false}])
-            }
-        }
-        task["status"] = json!("done");
-        if index == 2 {
-            reject(&project, next.clone());
-            next["requirements"][0]["tasks"][index]["subtasks"][0]["completed"] = json!(true);
-        }
-        project = save(&project, next);
-    }
-    let mut next = project.clone();
-    next["requirements"][0]["tasks"][3]["status"] = json!("running");
-    project = save(&project, next);
-    let mut next = project.clone();
-    next["requirements"][0]["tasks"][3]["status"] = json!("done");
-    next["requirements"][0]["tasks"][3]["checks"] =
-        json!([{"criterion_id":criterion,"status":"passed","evidence":""}]);
-    reject(&project, next.clone());
-    next["requirements"][0]["tasks"][3]["checks"][0]["evidence"] =
-        json!("Manual acceptance and regression evidence");
-    project = save(&project, next);
-    let mut invalid = project.clone();
-    invalid["requirements"][0]["tasks"][0]["document"] = json!("changed without reopening");
-    reject(&project, invalid);
-    let mut reopened = project.clone();
-    reopened["requirements"][0]["tasks"][2]["status"] = json!("running");
-    reopened["requirements"][0]["tasks"][3]["status"] = json!("todo");
-    reject(&project, reopened.clone());
-    reopened["requirements"][0]["tasks"][3]["checks"][0]["status"] = json!("pending");
-    project = save(&project, reopened);
-    h.ok(&["daemon", "restart"]);
+        .0 >= 400
+    );
+    let mut edited = project.clone();
+    edited["requirements"][0]["description"] = json!("updated requirement");
+    let saved = h.api(
+        "POST",
+        "/api/projects",
+        json!({"project":edited,"previous":project}),
+    )["project"]
+        .clone();
+    assert!(saved["requirements"][0].get("tasks").is_none());
+    let disk: Value = serde_json::from_slice(
+        &std::fs::read(
+            h.0.path()
+                .join("projects")
+                .join(format!("{}.json", saved["id"].as_str().unwrap())),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(disk, saved);
+    assert_eq!(h.workflow()["tasks"], workflow["tasks"]);
+    assert_eq!(h.workflow()["tasks"][0]["id"], task["task"]["id"]);
+    assert_eq!(std::fs::read(directory.join("tasks.md")).unwrap(), document);
+    assert_eq!(h.workflow()["specs"][0]["id"], spec_id);
+}
+
+#[test]
+fn agent_settings_persist_validate_isolate_and_reach_native_launch() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    h.add_native("codex", "settings-codex");
+    h.add_native("pi", "settings-pi");
+    let original: Value =
+        serde_json::from_str(&h.ok(&["agent", "inspect", "settings-codex"])).unwrap();
+    let pi: Value = serde_json::from_str(&h.ok(&["agent", "inspect", "settings-pi"])).unwrap();
+    let skill_root = h.0.path().join("extra-skills");
+    std::fs::create_dir_all(skill_root.join("review")).unwrap();
+    let manifest = skill_root.join("review/SKILL.md");
+    std::fs::write(
+        &manifest,
+        "---\nname: review\ndescription: Review code\n---\nReview",
+    )
+    .unwrap();
+    let mut next = original.clone();
+    next["permissions"] = json!("full_access");
+    next["reasoning_effort"] = json!("high");
+    next["model"] = json!("test-model");
+    next["skill_directories"] = json!([skill_root]);
+    next["disabled_skills"] = json!([manifest]);
+    next["enabled"] = json!(false);
+    let saved = h.api("PUT", "/api/agents/settings-codex", next.clone());
+    assert_eq!(saved["agent"]["enabled"], true);
+    assert_eq!(saved["agent"]["reasoning_effort"], "high");
     assert_eq!(
-        h.api("GET", "/api/projects", Value::Null)["projects"][0],
-        project
+        serde_json::from_str::<Value>(&h.ok(&["agent", "inspect", "settings-pi"])).unwrap(),
+        pi
+    );
+    let skills = h.api("GET", "/api/agents/settings-codex/skills", Value::Null);
+    assert!(
+        skills["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|skill| skill["name"] == "review" && skill["enabled"] == false)
+    );
+    let run = h.start("settings-codex", "normal", None);
+    h.wait(&run, &["completed"]);
+    let trace = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl")).unwrap();
+    assert!(
+        trace.contains("\"sandbox\": \"danger-full-access\""),
+        "{trace}"
+    );
+    assert!(
+        trace.contains("model_reasoning_effort=\\\"high\\\""),
+        "{trace}"
+    );
+    assert!(trace.contains("skills.config="), "{trace}");
+    assert!(trace.contains("test-model"), "{trace}");
+    let mut invalid = next.clone();
+    invalid["reasoning_effort"] = json!("injected; command");
+    assert!(h.http("PUT", "/api/agents/settings-codex", invalid).0 >= 400);
+    let mut invalid = next.clone();
+    invalid["name"] = json!("renamed");
+    assert!(h.http("PUT", "/api/agents/settings-codex", invalid).0 >= 400);
+    let run = h.start("settings-codex", "slow", None);
+    h.wait(&run, &["running"]);
+    assert!(h.http("PUT", "/api/agents/settings-codex", next.clone()).0 >= 400);
+    h.control(&run, "cancel", json!({}));
+    h.wait(&run, &["cancelled"]);
+    next["permissions"] = json!("read_only");
+    h.api("PUT", "/api/agents/settings-codex", next);
+    h.ok(&["daemon", "restart"]);
+    let persisted: Value =
+        serde_json::from_str(&h.ok(&["agent", "inspect", "settings-codex"])).unwrap();
+    assert_eq!(persisted["permissions"], "read_only");
+    assert_eq!(persisted["model"], "test-model");
+    let run = h.start("settings-codex", "normal", None);
+    h.wait(&run, &["completed"]);
+    let trace = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl")).unwrap();
+    assert!(trace.contains("\"sandbox\": \"read-only\""), "{trace}");
+    let mut invalid_pi = pi.clone();
+    invalid_pi["permissions"] = json!("read_only");
+    assert!(h.http("PUT", "/api/agents/settings-pi", invalid_pi).0 >= 400);
+    let mut pi = pi;
+    pi["reasoning_effort"] = json!("medium");
+    pi["skill_directories"] = json!([skill_root]);
+    pi["disabled_skills"] = json!([manifest]);
+    std::fs::create_dir_all(skill_root.join("testing")).unwrap();
+    std::fs::write(
+        skill_root.join("testing/SKILL.md"),
+        "---\nname: testing\ndescription: Test code\n---\nTest",
+    )
+    .unwrap();
+    h.api("PUT", "/api/agents/settings-pi", pi);
+    let run = h.start("settings-pi", "normal", None);
+    h.wait(&run, &["completed"]);
+    let trace = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl")).unwrap();
+    let args = trace
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|record| record["startup"]["args"].as_array().cloned())
+        .find(|args| args.iter().any(|arg| arg == "--mode"))
+        .unwrap();
+    assert!(args.contains(&json!("--no-skills")));
+    assert!(args.contains(&json!("--thinking")));
+    assert!(args.contains(&json!("medium")));
+    assert!(args.contains(&json!(
+        skill_root.join("testing/SKILL.md").canonicalize().unwrap()
+    )));
+    assert!(!args.contains(&json!(manifest.canonicalize().unwrap())));
+}
+
+#[test]
+fn spec_next_phase_status_requires_review_ready_documents_even_when_automatic_execution_is_paused()
+{
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    let (id, directory) = planned_spec(&h);
+    assert!(
+        h.workflow()["ready_spec_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let path = directory.join(".spec-state.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    state["blocking"] = json!("User review of tasks.md");
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    h.api(
+        "POST",
+        &format!("/api/specs/{id}/action"),
+        json!({"action":"pause"}),
+    );
+    let snapshot = h.workflow();
+    assert_eq!(snapshot["specs"][0]["paused"], true);
+    assert_eq!(snapshot["ready_spec_ids"], json!([id]));
+    let tasks = std::fs::read(directory.join("tasks.md")).unwrap();
+    std::fs::write(directory.join("tasks.md"), "").unwrap();
+    assert!(
+        h.workflow()["ready_spec_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::write(directory.join("tasks.md"), tasks).unwrap();
+    state["blocking"] = json!("Please clarify the acceptance criteria");
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(
+        h.workflow()["ready_spec_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }

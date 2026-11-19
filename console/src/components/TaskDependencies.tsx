@@ -107,7 +107,6 @@ export function TaskDependencies({
   boardRef: RefObject<HTMLDivElement | null>
 }) {
   const [paths, setPaths] = useState<{ from: string; to: string; d: string }[]>([])
-  const [size, setSize] = useState({ width: 0, height: 0 })
   const markerId = useId()
   useEffect(() => {
     const board = boardRef.current
@@ -137,7 +136,6 @@ export function TaskDependencies({
           }
         }
       setPaths(next)
-      setSize({ width: board.clientWidth, height: board.scrollHeight })
     }
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(frame)
@@ -154,8 +152,8 @@ export function TaskDependencies({
   return (
     <svg
       className="task-dependencies"
-      width={size.width}
-      height={size.height}
+      width="100%"
+      height="100%"
       aria-label="任务先后依赖"
       role="group"
     >

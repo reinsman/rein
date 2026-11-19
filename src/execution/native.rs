@@ -10,8 +10,8 @@ use std::{
 use a2alinker::{
     AgentKind, Options,
     native::{
-        AdapterContext, AgentEvent, AgentSession, Interaction, InteractionReply, RunOutcome,
-        ToolPhase, create_session, validate_reply,
+        AdapterContext, AgentEvent, AgentSession, Instruction, Interaction, InteractionReply,
+        RunOutcome, ToolPhase, create_session, validate_reply,
     },
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeRunOptions {
     pub provider: AgentKind,
@@ -31,6 +31,16 @@ pub struct NativeRunOptions {
     pub model: Option<String>,
     #[serde(default)]
     pub prepare: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub approval_policy: Option<String>,
+    #[serde(default)]
+    pub skill_directories: Vec<PathBuf>,
+    #[serde(default)]
+    pub only_explicit_skills: bool,
 }
 
 impl NativeRunOptions {
@@ -42,6 +52,11 @@ impl NativeRunOptions {
         options.agent.native_config = self.native_config;
         options.agent.model = self.model;
         options.agent.prepare = self.prepare;
+        options.agent.args = self.args;
+        options.agent.sandbox = self.sandbox;
+        options.agent.approval_policy = self.approval_policy;
+        options.skills.directories = self.skill_directories;
+        options.skills.only_explicit = self.only_explicit_skills;
         options.resolve()?;
         options.agent.workspace = options.agent.workspace.canonicalize()?;
         Ok(options)
@@ -53,6 +68,7 @@ struct ControlState {
     attempt: Option<pb::AttemptRef>,
     cancel: CancellationToken,
     replies: Option<mpsc::Sender<InteractionReply>>,
+    instructions: Option<mpsc::Sender<Instruction>>,
     pending: HashMap<String, Interaction>,
     acknowledgments: HashMap<String, (pb::ControlCommand, pb::CommandAck)>,
     native_id: Option<String>,
@@ -63,6 +79,83 @@ struct ControlState {
 pub struct NativeControl(Arc<Mutex<ControlState>>);
 
 impl NativeControl {
+    pub async fn instruct(&self, command: &pb::ControlCommand) -> Result<pb::CommandAck> {
+        let control_command::Payload::Instruction(instruction) =
+            command.payload.as_ref().context("missing instruction")?
+        else {
+            bail!("expected an instruction command");
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut ack = pb::CommandAck {
+            command_id: command.command_id.clone(),
+            attempt: command.attempt.clone(),
+            state: pb::CommandAckState::Received as i32,
+            error_code: String::new(),
+        };
+        {
+            let mut state = self.0.lock().unwrap();
+            ensure!(!command.command_id.is_empty(), "command_id is required");
+            ensure!(
+                command.attempt.is_some() && command.attempt == state.attempt,
+                "stale or mismatched attempt"
+            );
+            if let Some((original, ack)) = state.acknowledgments.get(&command.command_id) {
+                ensure!(
+                    original == command,
+                    "command_id reused with a different payload"
+                );
+                return Ok(ack.clone());
+            }
+            ensure!(
+                !state.finished && !state.cancel.is_cancelled(),
+                "execution is no longer accepting instructions"
+            );
+            ensure!(
+                state.pending.is_empty(),
+                "answer the pending approval or question before sending guidance"
+            );
+            ensure!(
+                !instruction.instruction.trim().is_empty()
+                    && instruction.instruction.len() <= 48 * 1024,
+                "instruction must contain 1–48 KiB"
+            );
+            ensure!(
+                state.acknowledgments.len() < 1024,
+                "too many control commands"
+            );
+            state
+                .instructions
+                .as_ref()
+                .context("Agent session is not ready for guidance")?
+                .try_send(Instruction {
+                    text: instruction.instruction.clone(),
+                    response: tx,
+                })
+                .context("cannot deliver instruction")?;
+            state
+                .acknowledgments
+                .insert(command.command_id.clone(), (command.clone(), ack.clone()));
+        }
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(Ok(()))) => ack.state = pb::CommandAckState::Applied as i32,
+            Ok(Ok(Err(error))) => {
+                ack.error_code = format!("{error:#}");
+                if ack.error_code.starts_with("Codex rejected turn/steer:")
+                    || ack.error_code.starts_with("Pi rejected steer:")
+                {
+                    ack.state = pb::CommandAckState::Rejected as i32;
+                }
+            }
+            _ => ack.error_code = "delivery_unknown".into(),
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .acknowledgments
+            .insert(command.command_id.clone(), (command.clone(), ack.clone()));
+        Ok(ack)
+    }
+
     pub fn cancel(&self) {
         self.0.lock().unwrap().cancel.cancel();
     }
@@ -145,9 +238,16 @@ impl NativeBackend {
             options,
             session: None,
             control: NativeControl::default(),
-            capabilities: ["text", "tools", "interaction", "cancel", "session.resume"]
-                .map(String::from)
-                .to_vec(),
+            capabilities: [
+                "text",
+                "tools",
+                "interaction",
+                "cancel",
+                "session.resume",
+                "instruction",
+            ]
+            .map(String::from)
+            .to_vec(),
         }
     }
 
@@ -200,6 +300,7 @@ impl NativeBackend {
             let mut state = self.control.0.lock().unwrap();
             state.native_id = Some(session.native_id().to_owned());
             state.replies = Some(replies);
+            state.instructions = session.instructions();
         }
         if cancel.is_cancelled() {
             return Ok(RunOutcome::Canceled);
@@ -409,6 +510,7 @@ impl super::Backend for NativeBackend {
             state.finished = true;
             state.pending.clear();
             state.replies = None;
+            state.instructions = None;
         }
         let (status, error) = match (result, stopped) {
             (_, Err(e)) => (
@@ -444,7 +546,14 @@ impl super::Backend for NativeBackend {
     }
 
     async fn control(&mut self, command: &pb::ControlCommand) -> Result<pb::CommandAck> {
-        self.control.command(command)
+        if matches!(
+            command.payload,
+            Some(control_command::Payload::Instruction(_))
+        ) {
+            self.control.instruct(command).await
+        } else {
+            self.control.command(command)
+        }
     }
 }
 
@@ -504,6 +613,141 @@ mod tests {
         });
         control.cancel();
         assert!(!backend.control.0.lock().unwrap().cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn guidance_reaches_the_active_native_turn_and_is_deduplicated() {
+        for provider in [AgentKind::Codex, AgentKind::Pi] {
+            let temp = tempfile::tempdir().unwrap();
+            let trace = temp.path().join("trace.jsonl");
+            let mut options = Options::default();
+            options.agent.kind = provider;
+            options.agent.workspace = temp.path().into();
+            options.agent.native_config = Some(temp.path().into());
+            options.agent.executable = Some(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../a2alinker/crates/a2alinker/tests/fixtures/fake_agent.py"),
+            );
+            options.agent.env.insert(
+                "A2ALINKER_TEST_TRACE".into(),
+                trace.to_string_lossy().into(),
+            );
+            options.runtime.cancel_timeout_seconds = 1;
+            let mut backend = NativeBackend::new(options);
+            let attempt = pb::AttemptRef {
+                run_id: "guide-run".into(),
+                attempt_id: "guide-attempt".into(),
+            };
+            backend.prepare(attempt.clone());
+            let control = backend.control_handle();
+            let (tx, mut rx) = mpsc::channel(32);
+            let lease = pb::RunLease {
+                run: Some(pb::Run {
+                    id: attempt.run_id.clone(),
+                    attempt_id: attempt.attempt_id.clone(),
+                    ..Default::default()
+                }),
+                prompt: "slow".into(),
+                ..Default::default()
+            };
+            let execution = tokio::spawn(async move {
+                super::super::Backend::execute(&mut backend, &lease, tx).await
+            });
+            tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut command = pb::ControlCommand {
+                command_id: "guide-command".into(),
+                attempt: Some(attempt),
+                payload: Some(control_command::Payload::Instruction(
+                    pb::InstructionCommand {
+                        instruction: "先修复测试，再继续实现。".into(),
+                    },
+                )),
+            };
+            let ack = control.instruct(&command).await.unwrap();
+            assert_eq!(ack.state, pb::CommandAckState::Applied as i32);
+            assert_eq!(control.instruct(&command).await.unwrap(), ack);
+            assert!(!execution.is_finished());
+            let calls: Vec<serde_json::Value> = std::fs::read_to_string(&trace)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let method = if provider == AgentKind::Pi {
+                "steer"
+            } else {
+                "turn/steer"
+            };
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|entry| entry["request"][if provider == AgentKind::Pi {
+                        "type"
+                    } else {
+                        "method"
+                    }] == method)
+                    .count(),
+                1
+            );
+            let original = command.clone();
+            command.attempt.as_mut().unwrap().attempt_id = "stale".into();
+            assert!(control.instruct(&command).await.is_err());
+            command = original.clone();
+            command.payload = Some(control_command::Payload::Instruction(
+                pb::InstructionCommand {
+                    instruction: "reject-guidance".into(),
+                },
+            ));
+            assert!(control.instruct(&command).await.is_err());
+            command.command_id = "rejected-command".into();
+            assert_eq!(
+                control.instruct(&command).await.unwrap().state,
+                pb::CommandAckState::Rejected as i32
+            );
+            command.command_id = "empty-command".into();
+            command.payload = Some(control_command::Payload::Instruction(
+                pb::InstructionCommand {
+                    instruction: " ".into(),
+                },
+            ));
+            assert!(control.instruct(&command).await.is_err());
+            control.0.lock().unwrap().pending.insert(
+                "approval".into(),
+                Interaction {
+                    id: "approval".into(),
+                    kind: "approval".into(),
+                    method: "test".into(),
+                    params: json!({}),
+                },
+            );
+            command = original;
+            command.command_id = "approval-command".into();
+            assert!(control.instruct(&command).await.is_err());
+            let (instruction_tx, mut instruction_rx) = mpsc::channel(1);
+            {
+                let mut state = control.0.lock().unwrap();
+                state.pending.clear();
+                state.instructions = Some(instruction_tx);
+            }
+            tokio::spawn(async move {
+                drop(instruction_rx.recv().await.unwrap());
+            });
+            command.command_id = "unknown-command".into();
+            let unknown = control.instruct(&command).await.unwrap();
+            assert_eq!(unknown.state, pb::CommandAckState::Received as i32);
+            assert_eq!(unknown.error_code, "delivery_unknown");
+            assert_eq!(control.instruct(&command).await.unwrap(), unknown);
+            control.cancel();
+            tokio::time::timeout(Duration::from_secs(5), execution)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            command.command_id = "finished-command".into();
+            assert!(control.instruct(&command).await.is_err());
+        }
     }
 
     #[tokio::test]

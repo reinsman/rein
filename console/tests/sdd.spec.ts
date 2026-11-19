@@ -1,34 +1,30 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
-const titles = ['需求规格与验收标准', '技术设计与约束', '开发实现', '验证与验收']
 const openTask = (page: Page, title: string) =>
   page.getByRole('button', { name: `打开任务 ${title}`, exact: true }).click()
 const detail = (page: Page) => page.locator('.task-detail')
 
-async function legacyProject(request: APIRequestContext, name: string, withSpec = false) {
+async function projectWithTask(request: APIRequestContext, name: string) {
   const project = {
     id: randomUUID(),
     name,
     description: '',
     directories: [],
     preferred_directory: null,
-    requirements: [
-      {
-        id: randomUUID(),
-        title: `${name}需求`,
-        description: '',
-        tasks: [
-          { id: randomUUID(), title: '原有任务', status: 'todo' },
-          ...(withSpec
-            ? [{ id: randomUUID(), title: titles[0], status: 'todo', type: 'spec' }]
-            : []),
-        ],
-      },
-    ],
+    requirements: [{ id: randomUUID(), title: `${name}需求`, description: '' }],
   }
-  const response = await request.post('/api/projects', { data: { project } })
-  expect(response.ok()).toBeTruthy()
+  expect((await request.post('/api/projects', { data: { project } })).ok()).toBeTruthy()
+  await request.post('/api/workflow/settings', {
+    data: { coding_agents: ['pi'], automatic: false },
+  })
+  expect(
+    (
+      await request.post('/api/tasks', {
+        data: { requirement_id: project.requirements[0].id, title: '原有任务', role: 'coding' },
+      })
+    ).ok(),
+  ).toBeTruthy()
   return project
 }
 async function selectRequirement(page: Page, project: string, requirement: string) {
@@ -41,7 +37,7 @@ test('drawer double-click expands and unwinds to the saved drag position', async
   page,
   request,
 }) => {
-  const project = await legacyProject(request, '抽屉双击')
+  const project = await projectWithTask(request, '抽屉双击')
   await selectRequirement(page, project.name, project.requirements[0].title)
   await openTask(page, '原有任务')
   const separator = page.getByRole('separator', { name: '调整任务详情宽度', exact: true })
@@ -111,13 +107,82 @@ test('drawer double-click expands and unwinds to the saved drag position', async
   await expectWidth(420)
 })
 
+test('outside clicks retract the task drawer through Todo and custom widths before closing', async ({
+  page,
+  request,
+}) => {
+  const project = await projectWithTask(request, '抽屉外部缩回')
+  await selectRequirement(page, project.name, project.requirements[0].title)
+  await openTask(page, '原有任务')
+  const separator = page.getByRole('separator', { name: '调整任务详情宽度', exact: true })
+  const box = (await separator.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(1440 - 400, box.y + box.height / 2, { steps: 4 })
+  await page.mouse.up()
+  const savedRatio = await page.evaluate(() => localStorage.getItem('rein.detailRatio'))
+  const todoWidth = await page.locator('.task-panel').evaluate((el) => el.clientWidth)
+  const outside = page.locator('.project-section .nav-label > span')
+  async function expectWidth(width: number) {
+    await expect
+      .poll(async () => Math.abs(Number(await separator.getAttribute('aria-valuenow')) - width))
+      .toBeLessThanOrEqual(1)
+  }
+  await separator.dblclick()
+  await separator.dblclick()
+  await expectWidth(1440 - 296)
+  await outside.click()
+  await expectWidth(todoWidth)
+  await outside.click()
+  await expectWidth(400)
+  await page.screenshot({
+    path: 'test-results/drawer-retracted-desktop.png',
+    animations: 'disabled',
+  })
+  await outside.click()
+  await expect(detail(page)).toHaveCount(0)
+  expect(await page.evaluate(() => localStorage.getItem('rein.detailRatio'))).toBe(savedRatio)
+  await openTask(page, '原有任务')
+  await expectWidth(400)
+  await separator.dblclick()
+  await outside.click()
+  await expectWidth(400)
+  await page.keyboard.press('Escape')
+  await expect(detail(page)).toHaveCount(0)
+
+  // A saved width equal to Todo must close without an extra unchanged stage.
+  await openTask(page, '原有任务')
+  const resized = (await separator.boundingBox())!
+  await page.mouse.move(resized.x + resized.width / 2, resized.y + resized.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(1440 - todoWidth, resized.y + resized.height / 2, { steps: 4 })
+  await page.mouse.up()
+  await separator.dblclick()
+  await expectWidth(1440 - 296)
+  await outside.click()
+  await expectWidth(todoWidth)
+  await outside.click()
+  await expect(detail(page)).toHaveCount(0)
+
+  // On mobile Todo and the maximum width coincide; no extra click at an identical width.
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: '任务', exact: true }).click()
+  await openTask(page, '原有任务')
+  await separator.dblclick()
+  await expectWidth(390 - 56)
+  await page.mouse.click(12, 300)
+  await expectWidth(260)
+  await page.mouse.click(12, 300)
+  await expect(detail(page)).toHaveCount(0)
+})
+
 test('the floating task drawer preserves resize, expand, focus, unsaved drafts and mobile behavior', async ({
   page,
   request,
 }) => {
-  const project = await legacyProject(request, '抽屉交互', true)
+  const project = await projectWithTask(request, '抽屉交互')
   await selectRequirement(page, project.name, project.requirements[0].title)
-  await openTask(page, titles[0])
+  await openTask(page, '原有任务')
   await expect(detail(page)).toBeVisible()
   const initial = await detail(page).boundingBox()
   const titleEdge = await page
@@ -148,13 +213,13 @@ test('the floating task drawer preserves resize, expand, focus, unsaved drafts a
   await page.getByRole('button', { name: '收起侧栏', exact: true }).click()
   await expect(detail(page)).toBeVisible()
   await detail(page)
-    .getByRole('textbox', { name: '需求规格', exact: true })
+    .getByRole('textbox', { name: '任务说明', exact: true })
     .fill('尚未保存的规格内容')
-  await page.keyboard.press('Escape')
+  await page.mouse.click(12, 300)
   await expect(page.getByRole('dialog', { name: '草稿尚未保存', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '继续编辑', exact: true }).click()
   await expect(page.getByRole('dialog', { name: '草稿尚未保存', exact: true })).toHaveCount(0)
-  await expect(detail(page).getByRole('textbox', { name: '需求规格', exact: true })).toHaveValue(
+  await expect(detail(page).getByRole('textbox', { name: '任务说明', exact: true })).toHaveValue(
     '尚未保存的规格内容',
   )
   await detail(page).getByRole('button', { name: '保存草稿', exact: true }).click()
@@ -162,18 +227,15 @@ test('the floating task drawer preserves resize, expand, focus, unsaved drafts a
   await expect(detail(page).locator('.sdd-editor-fields')).not.toHaveAttribute('disabled')
   await page.keyboard.press('Escape')
   await expect(detail(page)).toHaveCount(0)
-  await expect(
-    page.getByRole('button', { name: `打开任务 ${titles[0]}`, exact: true }),
-  ).toBeFocused()
-  await openTask(page, titles[0])
+  await expect(page.getByRole('button', { name: '打开任务 原有任务', exact: true })).toBeFocused()
+  await openTask(page, '原有任务')
   expect(Math.abs((await detail(page).boundingBox())!.width - wider)).toBeLessThanOrEqual(1)
-  await detail(page).getByRole('button', { name: '编辑', exact: true }).click()
-  await expect(detail(page).getByRole('textbox', { name: '需求规格', exact: true })).toHaveValue(
+  await expect(detail(page).locator('.task-description .sdd-document')).toHaveText(
     '尚未保存的规格内容',
   )
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(detail(page).getByRole('button', { name: '开始任务', exact: true })).toBeVisible()
-  expect((await detail(page).boundingBox())!.width).toBeLessThanOrEqual(390)
+  await expect.poll(async () => (await detail(page).boundingBox())!.width).toBeLessThanOrEqual(390)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
   await page.screenshot({
     path: 'test-results/sdd-drawer-mobile.png',

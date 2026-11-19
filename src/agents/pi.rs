@@ -9,5 +9,6 @@ pub fn options(config: &AgentConfig) -> NativeRunOptions {
         native_config: config.native_config.clone(),
         model: config.model.clone(),
         prepare: config.prepare.clone(),
+        ..Default::default()
     }
 }

@@ -1,6 +1,6 @@
 //! Loopback-only Console and same-origin JSON API, served by reind itself.
 use crate::{
-    agents::AgentConfig,
+    agents::{AgentConfig, AgentType, Permissions},
     local::{LocalRuntime, Project},
 };
 use anyhow::{Context, Result, ensure};
@@ -73,20 +73,43 @@ pub fn router(
     };
     Router::new()
         .route("/api/agents", get(agents).post(add_agent))
+        .route("/api/agent-types/{provider}", get(type_configs))
+        .route("/api/agent-types/{provider}/defaults", get(type_defaults))
+        .route(
+            "/api/agent-types/{provider}/permissions",
+            axum::routing::put(set_default_permissions),
+        )
+        .route(
+            "/api/agent-types/{provider}/{name}",
+            axum::routing::put(update_type_config),
+        )
+        .route(
+            "/api/agents/{name}/skills",
+            get(agent_skills).post(install_agent_skill),
+        )
         .route("/api/agents/{name}/availability", post(availability))
-        .route("/api/agents/{name}", axum::routing::delete(remove_agent))
+        .route(
+            "/api/agents/{name}",
+            axum::routing::delete(remove_agent).put(update_agent),
+        )
         .route("/api/agents/{name}/history", get(history))
         .route("/api/agents/{name}/events", get(events))
+        .route("/api/events", get(state_events))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}", get(run))
+        .route("/api/runs/{id}/followup-ready", get(followup_ready))
         .route("/api/runs/{id}/cancel", post(cancel))
         .route("/api/runs/{id}/reply", post(reply))
+        .route("/api/runs/{id}/instruction", post(instruction))
         .route("/api/projects", get(projects).post(save_project))
         .route("/api/workflow", get(workflow_snapshot))
         .route("/api/workflow/settings", post(workflow_settings))
         .route("/api/specs", post(create_spec))
         .route("/api/specs/{id}/action", post(spec_action))
         .route("/api/specs/{id}/chat", post(spec_chat))
+        .route("/api/specs/{id}/start", post(start_spec))
+        .route("/api/specs/{id}/plan", get(spec_plan))
+        .route("/api/specs/{id}/tasks", post(submit_spec_task))
         .route(
             "/api/artifacts/{id}/{name}",
             get(workflow_file).post(save_workflow_file),
@@ -97,14 +120,78 @@ pub fn router(
             get(requirement_conversation),
         )
         .route("/api/requirements/{id}/chat", post(requirement_chat))
+        .route("/api/tasks/{id}", axum::routing::delete(delete_task))
         .route("/api/tasks/{id}/action", post(task_action))
+        .route("/api/tasks/{id}/chat", post(task_chat))
+        .route("/api/task-messages/{id}/retry", post(retry_task_update))
         .fallback(asset)
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), same_origin))
         .with_state(state)
 }
 async fn workflow_snapshot(State(s): State<WebState>) -> ApiResult {
-    Ok(Json(json!(s.workflow.snapshot().await)))
+    Ok(Json(workflow_view(&s).await?))
+}
+async fn workflow_view(s: &WebState) -> Result<Value> {
+    let snapshot = s.workflow.snapshot().await;
+    let sessions: HashMap<_, _> = snapshot
+        .specs
+        .iter()
+        .map(|spec| (&spec.session_id, &spec.id))
+        .chain(
+            snapshot
+                .conversations
+                .iter()
+                .map(|conversation| (&conversation.session_id, &conversation.requirement_id)),
+        )
+        .collect();
+    let updates: HashMap<_, _> = snapshot
+        .messages
+        .iter()
+        .filter(|message| !message.update_done)
+        .filter_map(|message| {
+            Some((
+                message.update_request_id.as_ref()?,
+                message.spec_id.as_ref()?,
+            ))
+        })
+        .collect();
+    let mut states: HashMap<&String, Vec<String>> = HashMap::new();
+    let mut executions: HashMap<&String, Vec<Value>> = HashMap::new();
+    if !sessions.is_empty() || !updates.is_empty() {
+        // Read only the latest runs linked to visible scopes; never send prompts or tool data.
+        let runs: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id,session_id,request_id,json_extract(snapshot,'$.state'),
+                CASE WHEN json_extract(snapshot,'$.state') IN ('waiting_input','waiting_approval')
+                THEN (SELECT json_extract(payload,'$.event.interaction_id') FROM local_events
+                      WHERE run_id=local_runs.id AND json_extract(payload,'$.event.type')='interaction'
+                      ORDER BY sequence DESC LIMIT 1) END
+             FROM local_runs WHERE rowid IN (SELECT MAX(rowid) FROM local_runs
+                 WHERE session_id IN (SELECT value FROM json_each(?)) OR request_id IN (SELECT value FROM json_each(?))
+                 GROUP BY session_id) ORDER BY rowid",
+        ).bind(serde_json::to_string(&sessions.keys().collect::<Vec<_>>())?)
+            .bind(serde_json::to_string(&updates.keys().collect::<Vec<_>>())?)
+            .fetch_all(&s.local.store.pool).await?;
+        for (id, session, request, state, interaction_id) in runs {
+            if let Some(scope) = sessions.get(&session).or_else(|| updates.get(&request)) {
+                states.entry(scope).or_default().push(state.clone());
+                executions.entry(scope).or_default().push(json!({
+                    "id": id, "state": state, "interaction_id": interaction_id,
+                }));
+            }
+        }
+    }
+    let ready_specs: Vec<_> = snapshot
+        .specs
+        .iter()
+        .filter(|spec| s.workflow.ready_for_next_phase(spec))
+        .map(|spec| &spec.id)
+        .collect();
+    let mut view = json!(snapshot);
+    view["ready_spec_ids"] = json!(ready_specs);
+    view["execution_states"] = json!(states);
+    view["execution_runs"] = json!(executions);
+    Ok(view)
 }
 async fn requirement_conversation(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!(s.workflow.conversation(&id).await?)))
@@ -115,8 +202,26 @@ async fn requirement_chat(
     Json(body): Json<SpecChat>,
 ) -> ApiResult {
     Ok(Json(
-        json!({"run":s.workflow.requirement_chat(&id,body.prompt,body.request_id,&s.origin).await?}),
+        json!({"run":s.workflow.requirement_chat(&id,body.prompt,body.request_id,&s.origin,body.session_id.as_deref()).await?}),
     ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskChat {
+    run_id: String,
+    prompt: String,
+    request_id: String,
+}
+async fn task_chat(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<TaskChat>,
+) -> ApiResult {
+    let run = s
+        .workflow
+        .task_chat(&id, &body.run_id, body.prompt, body.request_id)
+        .await?;
+    Ok(Json(json!({"run":run})))
 }
 async fn workflow_settings(
     State(s): State<WebState>,
@@ -132,11 +237,55 @@ struct CreateSpec {
     title: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    kind: crate::workflow::SpecKind,
+    #[serde(default)]
+    start: bool,
 }
 async fn create_spec(State(s): State<WebState>, Json(body): Json<CreateSpec>) -> ApiResult {
+    if body.start {
+        crate::workflow::bounded(&body.description, 12000)?;
+    }
+    let mut spec = s
+        .workflow
+        .create_spec(body.requirement_id, body.title, body.description, body.kind)
+        .await?;
+    if body.start {
+        let _ = s.workflow.begin_spec(&spec.id).await;
+        spec = s
+            .workflow
+            .snapshot()
+            .await
+            .specs
+            .into_iter()
+            .find(|s| s.id == spec.id)
+            .context("Spec not found")?;
+    }
+    Ok(Json(json!({"spec":spec})))
+}
+async fn start_spec(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!({"run":s.workflow.begin_spec(&id).await?})))
+}
+async fn spec_plan(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!(s.workflow.document_plan(&id).await?)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubmitSpecTask {
+    plan_id: String,
+}
+async fn submit_spec_task(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<SubmitSpecTask>,
+) -> ApiResult {
     Ok(Json(
-        json!({"spec":s.workflow.create_spec(body.requirement_id,body.title,body.description).await?}),
+        json!({"task": s.workflow.submit_spec_task(&id, &body.plan_id).await?}),
     ))
+}
+async fn retry_task_update(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    s.workflow.retry_task_update(&id).await?;
+    workflow_snapshot(State(s)).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -156,6 +305,9 @@ async fn spec_action(
 struct SpecChat {
     prompt: String,
     request_id: String,
+    session_id: Option<String>,
+    #[serde(default)]
+    options: crate::workflow::PlanningOptions,
 }
 async fn spec_chat(
     State(s): State<WebState>,
@@ -163,14 +315,16 @@ async fn spec_chat(
     Json(body): Json<SpecChat>,
 ) -> ApiResult {
     Ok(Json(
-        json!({"run":s.workflow.chat(&id,body.prompt,body.request_id).await?}),
+        json!({"run":s.workflow.chat_with_options(&id,body.prompt,body.request_id,body.options,body.session_id.as_deref()).await?}),
     ))
 }
 async fn workflow_file(
     State(s): State<WebState>,
     Path((id, name)): Path<(String, String)>,
 ) -> ApiResult {
-    Ok(Json(json!({"content":s.workflow.file(&id,&name).await?})))
+    let content = s.workflow.file(&id, &name).await?;
+    let confirmed = s.workflow.document_confirmed(&id, &name, &content).await;
+    Ok(Json(json!({"content":content,"confirmed":confirmed})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -209,6 +363,10 @@ struct TaskAction {
     description: Option<String>,
     agent_id: Option<String>,
 }
+async fn delete_task(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    s.workflow.delete_task(&id).await?;
+    workflow_snapshot(State(s)).await
+}
 async fn task_action(
     State(s): State<WebState>,
     Path(id): Path<String>,
@@ -245,10 +403,97 @@ async fn same_origin(State(state): State<WebState>, request: Request, next: Next
     response
 }
 async fn agents(State(s): State<WebState>) -> ApiResult {
-    Ok(Json(json!({"agents":s.local.agents.list()?})))
+    Ok(Json(json!({"agents":agent_views(&s.local)?})))
+}
+async fn type_configs(State(s): State<WebState>, Path(provider): Path<AgentType>) -> ApiResult {
+    let files = s.local.type_configs(provider).await?;
+    Ok(Json(
+        json!({"defaults": s.local.agents.type_defaults(provider, &files).ok(), "files": files}),
+    ))
+}
+async fn type_defaults(State(s): State<WebState>, Path(provider): Path<AgentType>) -> ApiResult {
+    let files = s.local.type_configs(provider).await?;
+    Ok(Json(json!(s.local.agents.type_defaults(provider, &files)?)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DefaultPermissionsEdit {
+    permissions: Permissions,
+}
+async fn set_default_permissions(
+    State(s): State<WebState>,
+    Path(provider): Path<AgentType>,
+    Json(edit): Json<DefaultPermissionsEdit>,
+) -> ApiResult {
+    s.local
+        .set_default_permissions(provider, edit.permissions)
+        .await?;
+    Ok(Json(json!({"permissions": edit.permissions})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypeConfigEdit {
+    content: String,
+    previous: String,
+}
+async fn update_type_config(
+    State(s): State<WebState>,
+    Path((provider, name)): Path<(AgentType, String)>,
+    Json(edit): Json<TypeConfigEdit>,
+) -> ApiResult {
+    let defaults = s
+        .local
+        .update_type_config(provider, &name, &edit.content, &edit.previous)
+        .await?;
+    Ok(Json(json!({"saved": true, "defaults": defaults})))
+}
+fn agent_views(local: &LocalRuntime) -> Result<Vec<Value>> {
+    local
+        .agents
+        .list()?
+        .into_iter()
+        .map(|agent| {
+            let mut value = serde_json::to_value(&agent)?;
+            value["skills"] = json!(crate::agents::skills::status(&agent, &local.directory));
+            Ok(value)
+        })
+        .collect()
+}
+async fn agent_skills(State(s): State<WebState>, Path(name): Path<String>) -> ApiResult {
+    Ok(Json(json!(crate::agents::skills::status(
+        &s.local.agents.get(&name)?,
+        &s.local.directory
+    ))))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallSkill {
+    confirmed: bool,
+}
+async fn install_agent_skill(
+    State(s): State<WebState>,
+    Path(name): Path<String>,
+    Json(body): Json<InstallSkill>,
+) -> ApiResult {
+    body.confirmed
+        .then_some(())
+        .context("安装 rein-spec 需要用户明确确认")?;
+    Ok(Json(json!(crate::agents::skills::install(
+        &s.local.agents.get(&name)?,
+        &s.local.directory
+    )?)))
 }
 async fn add_agent(State(s): State<WebState>, Json(config): Json<AgentConfig>) -> ApiResult {
     Ok(Json(json!({"agent":s.local.add_agent(config).await?})))
+}
+async fn update_agent(
+    State(s): State<WebState>,
+    Path(name): Path<String>,
+    Json(config): Json<AgentConfig>,
+) -> ApiResult {
+    Ok(Json(
+        json!({"agent":s.local.update_agent(&name, config).await?}),
+    ))
 }
 #[derive(Deserialize)]
 struct Availability {
@@ -307,6 +552,9 @@ async fn run(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
         serde_json::to_value(s.local.get(&id, 0).await?).map_err(anyhow::Error::from)?,
     ))
 }
+async fn followup_ready(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!({"ready":s.local.followup_ready(&id).await?})))
+}
 #[derive(Deserialize)]
 struct Cancel {
     attempt_id: String,
@@ -338,6 +586,32 @@ struct Reply {
     command_id: String,
     interaction_id: String,
     response: Value,
+}
+#[derive(Deserialize)]
+struct Instruction {
+    attempt_id: String,
+    command_id: String,
+    instruction: String,
+}
+async fn instruction(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<Instruction>,
+) -> ApiResult {
+    Ok(Json(
+        s.local
+            .command(
+                &id,
+                body.attempt_id,
+                body.command_id,
+                rein_proto::hub::v1::control_command::Payload::Instruction(
+                    rein_proto::hub::v1::InstructionCommand {
+                        instruction: body.instruction,
+                    },
+                ),
+            )
+            .await?,
+    ))
 }
 async fn reply(
     State(s): State<WebState>,
@@ -373,6 +647,38 @@ async fn save_project(State(s): State<WebState>, Json(body): Json<SaveProject>) 
     Ok(Json(
         json!({"project":s.local.save_project(body.project, body.previous).await?}),
     ))
+}
+async fn state_events(State(s): State<WebState>) -> impl IntoResponse {
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<Event, Infallible>>(8);
+    tokio::spawn(async move {
+        let mut previous = HashMap::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! { _ = s.stop.cancelled() => break, _ = tx.closed() => break, _ = interval.tick() => {} }
+            // Include file edits made outside the API, just like the JSON agent list.
+            let agents = match agent_views(&s.local) {
+                Ok(agents) => json!({"agents": agents}),
+                Err(error) => json!({"error": format!("{error:#}")}),
+            };
+            let workflow = match workflow_view(&s).await {
+                Ok(view) => view,
+                Err(error) => json!({"error": format!("{error:#}")}),
+            };
+            for (name, value) in [("agents", agents), ("workflow", workflow)] {
+                let value = value.to_string();
+                if previous.get(name) == Some(&value) {
+                    continue;
+                }
+                let event = Event::default().event(name).data(value.clone());
+                tokio::select! {
+                    _ = s.stop.cancelled() => return,
+                    result = tx.send(Ok(event)) => { if result.is_err() { return; } }
+                }
+                previous.insert(name, value);
+            }
+        }
+    });
+    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
 async fn events(State(s): State<WebState>, Path(name): Path<String>) -> impl IntoResponse {
     let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<Event, Infallible>>(8);

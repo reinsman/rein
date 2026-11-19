@@ -1,24 +1,28 @@
 import { useState } from 'react'
 import {
+  Alert,
   Button,
   ButtonBase,
   Dialog,
-  DialogContent,
   DialogTitle,
   ListItemButton,
   Select,
-  TextField,
 } from '@mui/material'
 import type { ReactNode } from 'react'
 import type { Preferences } from '../services/preferences'
 import { reinService } from '../services/reinService'
 import { Action, Icon } from './shared'
 import { WorkflowSettings } from './WorkflowSettings'
+import { AgentTypeSettings } from './AgentTypeSettings'
 
 const categories = [
   { name: '通用', icon: 'tune', description: '偏好设置适用于此设备。' },
-  { name: '模型与连接', icon: 'flow', description: '管理本机 Agent 登录状态及可选的模型提供商。' },
-  { name: '执行环境', icon: 'computer', description: '控制本机任务的运行方式与并发。' },
+  {
+    name: 'Agent 配置',
+    icon: 'flow',
+    description: '管理 Codex 和 Pi 的类型默认值与共享原生配置。',
+  },
+  { name: 'Agents 编排', icon: 'computer', description: '分配执行角色并设置任务调度。' },
   { name: '通知', icon: 'notify', description: '选择希望收到提醒的任务事件。' },
   { name: '数据与隐私', icon: 'shield', description: '管理本机记录与 Agent 记忆。' },
 ]
@@ -51,10 +55,12 @@ interface Props {
 export function Settings({ open, onClose, value, onChange, notify }: Props) {
   const [category, setCategory] = useState(0)
   const [status, setStatus] = useState('更改自动保存')
-  const [connection, setConnection] = useState<string | null>(null)
-  const [connectionName, setConnectionName] = useState('')
-  const [endpoint, setEndpoint] = useState('http://localhost:8080')
-  const [connections, setConnections] = useState(['Codex', 'Claude Code', 'Pi'])
+  const [typeConfigDirty, setTypeConfigDirty] = useState(false)
+  const [showDraftWarning, setShowDraftWarning] = useState(false)
+  function close() {
+    if (typeConfigDirty) setShowDraftWarning(true)
+    else onClose()
+  }
   function update<K extends keyof Preferences>(key: K, next: Preferences[K]) {
     const ok = onChange({ ...value, [key]: next })
     setStatus(ok ? '更改已保存到此设备' : '当前浏览器无法保存，设置仅本次有效')
@@ -102,7 +108,7 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
     <>
       <Dialog
         open={open}
-        onClose={onClose}
+        onClose={close}
         maxWidth={false}
         className="settings-dialog"
         slotProps={{
@@ -119,7 +125,7 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
       >
         <DialogTitle className="settings-title">
           配置
-          <Action label="关闭配置" icon="close" onClick={onClose} />
+          <Action label="关闭配置" icon="close" onClick={close} />
         </DialogTitle>
         <div className="settings-body">
           <nav className="settings-nav" aria-label="配置分类">
@@ -127,7 +133,11 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
               <ListItemButton
                 selected={category === i}
                 key={item.name}
-                onClick={() => setCategory(i)}
+                onClick={() => {
+                  if (i === category) return
+                  if (typeConfigDirty) setShowDraftWarning(true)
+                  else setCategory(i)
+                }}
               >
                 <Icon name={item.icon} />
                 {item.name}
@@ -158,55 +168,17 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
               )}
               {category === 1 && (
                 <>
-                  <Row label="默认模型" description="未单独指定时使用 Agent 自身配置。">
-                    {select('model', '默认模型', ['跟随 Agent 配置', 'Codex', 'Claude Code', 'Pi'])}
-                  </Row>
-                  {connections.map((name) => (
-                    <Row key={name} label={name} description="本机 CLI · 演示状态">
-                      <div className="connection-actions">
-                        <span className="connected">
-                          <span className="status-dot done" />
-                          模拟连接
-                        </span>
-                        <Button
-                          variant="outlined"
-                          onClick={() => {
-                            setConnection(name)
-                            setConnectionName(name)
-                          }}
-                        >
-                          管理
-                        </Button>
-                      </div>
-                    </Row>
-                  ))}
-                  <Row
-                    label="其他模型提供商"
-                    description="按需配置 API 连接，不影响已有 CLI 登录。"
-                  >
-                    <Button
-                      variant="outlined"
-                      onClick={() => {
-                        setConnection('new')
-                        setConnectionName('')
-                      }}
-                    >
-                      添加连接
-                    </Button>
-                  </Row>
+                  {showDraftWarning && <Alert severity="warning">请先保存或放弃修改。</Alert>}
+                  <AgentTypeSettings
+                    notify={notify}
+                    onDirty={(dirty) => {
+                      setTypeConfigDirty(dirty)
+                      if (!dirty) setShowDraftWarning(false)
+                    }}
+                  />
                 </>
               )}
-              {category === 2 && (
-                <>
-                  <WorkflowSettings notify={notify} />
-                  <Row label="默认终端" description="用于显示 Agent CLI 的字体。">
-                    {select('terminal', '默认终端', [
-                      'JetBrains Mono · 12 px',
-                      'JetBrains Mono · 13 px',
-                    ])}
-                  </Row>
-                </>
-              )}
+              {category === 2 && <WorkflowSettings notify={notify} />}
               {category === 3 && (
                 <>
                   <Row label="需要你回复" description="Agent 等待确认或补充信息时提醒。">
@@ -267,7 +239,7 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
               <Icon name="save" size={14} />
               <span>
                 {category === 1
-                  ? '连接状态为前端模拟，未连接本机服务'
+                  ? '下次启动原生 Agent 时读取配置'
                   : category === 2
                     ? '角色配置需点击保存'
                     : status}
@@ -275,41 +247,6 @@ export function Settings({ open, onClose, value, onChange, notify }: Props) {
             </div>
           </section>
         </div>
-      </Dialog>
-      <Dialog open={!!connection} onClose={() => setConnection(null)} fullWidth maxWidth="xs">
-        <DialogTitle className="dialog-title">
-          {connection === 'new' ? '添加模拟连接' : `管理 ${connection}`}
-          <Action label="关闭连接配置" icon="close" onClick={() => setConnection(null)} />
-        </DialogTitle>
-        <DialogContent>
-          <form
-            className="connection-form"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (connection === 'new') setConnections((prev) => [...prev, connectionName])
-              setConnection(null)
-              notify('模拟连接已保存，仅本次演示有效')
-            }}
-          >
-            <p className="muted">仅演示配置流程，不收集密钥，也不会发起真实连接。</p>
-            <TextField
-              label="连接名称"
-              required
-              value={connectionName}
-              onChange={(e) => setConnectionName(e.target.value)}
-            />
-            <TextField
-              label="服务地址"
-              type="url"
-              required
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-            />
-            <Button type="submit" variant="contained" disabled={!connectionName.trim()}>
-              保存模拟配置
-            </Button>
-          </form>
-        </DialogContent>
       </Dialog>
     </>
   )

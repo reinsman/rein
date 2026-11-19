@@ -1,6 +1,9 @@
 //! Standalone execution: editable configuration files and durable chat/event history.
 use crate::{
-    agents::{AgentConfig, AgentFiles},
+    agents::{
+        AgentConfig, AgentFiles, AgentType, Permissions,
+        type_config::{TypeConfigFile, TypeDefaults},
+    },
     execution::{
         Backend, ExecutionManager, LocalEvent, LocalRun,
         a2a::{A2aBackend, A2aControl},
@@ -42,6 +45,14 @@ impl Control {
     }
     async fn command(&self, command: &pb::ControlCommand) -> Result<pb::CommandAck> {
         match self {
+            Self::Native(c)
+                if matches!(
+                    command.payload,
+                    Some(pb::control_command::Payload::Instruction(_))
+                ) =>
+            {
+                c.instruct(command).await
+            }
             Self::Native(c) => c.command(command),
             Self::A2a(c) => c.command(command).await,
         }
@@ -93,10 +104,7 @@ pub struct Requirement {
     pub title: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
-    pub tasks: Vec<Task>,
 }
-pub use crate::sdd::Task;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -107,6 +115,7 @@ pub enum TaskStatus {
 
 impl LocalRuntime {
     pub async fn new(directory: PathBuf, store: LocalStore) -> Result<Self> {
+        crate::agents::skills::prepare_source(&directory)?;
         for child in ["agents", "projects"] {
             let path = directory.join(child);
             fs::create_dir_all(&path)?;
@@ -121,6 +130,19 @@ impl LocalRuntime {
             operations: Default::default(),
             stopping: Default::default(),
         };
+        if let Ok(agents) = runtime.agents.list() {
+            for config in agents.into_iter().filter(|config| config.a2a.is_none()) {
+                if let Err(error) = runtime
+                    .agents
+                    .prepare_type(config.provider, config.native_config.as_deref())
+                {
+                    eprintln!(
+                        "reind: could not initialize {}'s type configuration: {error:#}",
+                        config.name
+                    );
+                }
+            }
+        }
         let rows = sqlx::query("SELECT id,snapshot FROM local_runs WHERE json_extract(snapshot,'$.state') NOT IN ('completed','failed','cancelled')").fetch_all(&runtime.store.pool).await?;
         for row in rows {
             let mut run: LocalRun = serde_json::from_str(row.get("snapshot"))?;
@@ -137,8 +159,50 @@ impl LocalRuntime {
     pub async fn add_agent(&self, mut config: AgentConfig) -> Result<AgentConfig> {
         let _guard = self.operations.lock().await;
         config.enabled = false;
+        config.validate()?;
+        if config.a2a.is_none() {
+            self.agents
+                .prepare_type(config.provider, config.native_config.as_deref())?;
+        }
         self.agents.add(&config)?;
         Ok(config)
+    }
+    pub async fn type_configs(&self, provider: AgentType) -> Result<Vec<TypeConfigFile>> {
+        let _guard = self.operations.lock().await;
+        self.agents.type_files(provider)
+    }
+    pub async fn update_type_config(
+        &self,
+        provider: AgentType,
+        name: &str,
+        content: &str,
+        previous: &str,
+    ) -> Result<Option<TypeDefaults>> {
+        let _guard = self.operations.lock().await;
+        let agents = self.agents.list()?;
+        let active = self.active.lock().await;
+        ensure!(
+            !active.values().any(|active| agents.iter().any(|agent| {
+                agent.name == active.agent && agent.provider == provider && agent.a2a.is_none()
+            })),
+            "请等此类型的 Agent 执行结束后再保存配置"
+        );
+        drop(active);
+        self.agents
+            .save_type_file(provider, name, content, previous)?;
+        Ok(self
+            .agents
+            .type_files(provider)
+            .ok()
+            .and_then(|files| self.agents.type_defaults(provider, &files).ok()))
+    }
+    pub async fn set_default_permissions(
+        &self,
+        provider: AgentType,
+        permissions: Permissions,
+    ) -> Result<()> {
+        let _guard = self.operations.lock().await;
+        self.agents.save_default_permissions(provider, permissions)
     }
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<AgentConfig> {
         let _guard = self.operations.lock().await;
@@ -146,6 +210,11 @@ impl LocalRuntime {
             self.ensure_idle(name).await?;
         }
         self.agents.set_enabled(name, enabled)
+    }
+    pub async fn update_agent(&self, name: &str, config: AgentConfig) -> Result<AgentConfig> {
+        let _guard = self.operations.lock().await;
+        self.ensure_idle(name).await?;
+        self.agents.update(name, config)
     }
     pub async fn remove_agent(&self, name: &str) -> Result<()> {
         let _guard = self.operations.lock().await;
@@ -227,12 +296,36 @@ impl LocalRuntime {
         self.ensure_idle(&agent_id).await?;
         let mut session_config = config.clone();
         session_config.enabled = true;
+        // Older sessions omitted full access from the configuration hash.
+        session_config.permissions = session_config
+            .permissions
+            .filter(|p| *p != Permissions::FullAccess);
         let fingerprint = if config.a2a.is_some() && directory.is_some() {
             serde_json::to_vec(&json!({"agent":session_config,"directory":directory}))?
         } else {
             serde_json::to_vec(&session_config)?
         };
-        let configuration = format!("{:x}", Sha256::digest(fingerprint));
+        let legacy_configuration = format!("{:x}", Sha256::digest(&fingerprint));
+        let managed_directory =
+            (config.a2a.is_none()).then(|| self.agents.type_directory(config.provider));
+        let managed_configuration = managed_directory
+            .as_ref()
+            .map(|directory| -> Result<_> {
+                Ok(format!(
+                    "{:x}",
+                    Sha256::digest(serde_json::to_vec(&json!([
+                        legacy_configuration,
+                        directory
+                    ]))?)
+                ))
+            })
+            .transpose()?;
+        let provider = config.provider.name();
+        let configuration = if managed_directory.is_some() {
+            format!("native:{provider}")
+        } else {
+            legacy_configuration.clone()
+        };
         let session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         ensure!(
             Uuid::parse_str(&session_id).is_ok(),
@@ -242,23 +335,40 @@ impl LocalRuntime {
             .bind(&session_id)
             .fetch_optional(&self.store.pool)
             .await?;
+        let mut use_managed = managed_directory.is_some();
         let (native_id, context_id) = if let Some(row) = &existing {
             ensure!(
                 row.get::<String, _>("agent_id") == agent_id,
                 "session belongs to a different agent"
             );
             ensure!(
-                row.get::<String, _>("config_hash") == configuration,
-                "agent configuration changed; start a new conversation"
-            );
-            ensure!(
                 row.get::<i64, _>("blocked") == 0,
                 "previous execution could not confirm shutdown; start a new conversation"
             );
-            (
-                row.get::<Option<String>, _>("native_id"),
-                row.get::<Option<String>, _>("context_id"),
-            )
+            let saved_configuration = row.get::<String, _>("config_hash");
+            let native_id = row.get::<Option<String>, _>("native_id");
+            if saved_configuration == legacy_configuration {
+                use_managed = false;
+            } else if saved_configuration != configuration
+                && Some(&saved_configuration) != managed_configuration.as_ref()
+            {
+                // Older native sessions recorded their provider in the run and saved a config hash.
+                let same_native_provider = config.a2a.is_none()
+                    && native_id.is_some()
+                    && !saved_configuration.starts_with("native:")
+                    && sqlx::query_scalar::<_, String>(
+                        "SELECT json_extract(snapshot,'$.provider') FROM local_runs WHERE session_id=? LIMIT 1",
+                    )
+                    .bind(&session_id)
+                    .fetch_optional(&self.store.pool)
+                    .await?
+                    .as_deref() == Some(provider);
+                ensure!(
+                    same_native_provider,
+                    "conversation belongs to a different execution backend; start a new conversation"
+                );
+            }
+            (native_id, row.get::<Option<String>, _>("context_id"))
         } else {
             (None, None)
         };
@@ -268,14 +378,11 @@ impl LocalRuntime {
             run_id: format!("local-{}", Uuid::new_v4()),
             attempt_id: Uuid::new_v4().to_string(),
             session_id: session_id.clone(),
-            provider: match config.provider {
-                crate::agents::AgentType::Pi => "pi",
-                crate::agents::AgentType::Codex => "codex",
-            }
-            .into(),
+            provider: provider.into(),
             state: "dispatched".into(),
             cancel_requested: false,
             native_session_id: native_id.clone(),
+            working_directory: None,
             last_sequence: 0,
             finished_at: None,
             error: None,
@@ -290,7 +397,19 @@ impl LocalRuntime {
                 let control = Control::A2a(backend.control_handle());
                 (Box::new(backend), control, directory)
             } else {
-                let options = config.native_options().resolve()?;
+                if config.permissions.is_none() {
+                    config.permissions = Some(self.agents.default_permissions(config.provider)?);
+                }
+                if use_managed {
+                    config.native_config = Some(
+                        self.agents
+                            .prepare_type(config.provider, config.native_config.as_deref())?,
+                    );
+                }
+                config
+                    .directory
+                    .get_or_insert_with(|| self.agents.type_directory(config.provider));
+                let options = config.native_options(&self.directory)?.resolve()?;
                 let directory = Some(fs::canonicalize(&options.agent.workspace)?);
                 let mut backend = NativeBackend::new(options);
                 backend.restore_native_id(native_id);
@@ -298,7 +417,8 @@ impl LocalRuntime {
                 let control = Control::Native(backend.control_handle());
                 (Box::new(backend), control, directory)
             };
-        let permit = self.execution.reserve(directory)?;
+        let permit = self.execution.reserve(directory.clone())?;
+        run.working_directory = directory;
         let mut tx = self.store.pool.begin().await?;
         if existing.is_none() {
             sqlx::query("INSERT INTO local_sessions(id,agent_id,config_hash) VALUES(?,?,?)")
@@ -483,10 +603,11 @@ impl LocalRuntime {
         .bind(events_after as i64)
         .fetch_all(&self.store.pool)
         .await?;
-        let acks: Vec<String> = sqlx::query_scalar("SELECT ack FROM local_commands WHERE run_id=?")
-            .bind(id)
-            .fetch_all(&self.store.pool)
-            .await?;
+        let acks: Vec<String> =
+            sqlx::query_scalar("SELECT ack FROM local_commands WHERE run_id=? ORDER BY rowid")
+                .bind(id)
+                .fetch_all(&self.store.pool)
+                .await?;
         Ok(RunRecord {
             run: serde_json::from_str(row.get("snapshot"))?,
             agent_id: row.get("agent_id"),
@@ -503,8 +624,17 @@ impl LocalRuntime {
                 .collect::<Result<_, _>>()?,
         })
     }
+    pub async fn followup_ready(&self, id: &str) -> Result<bool> {
+        let (agent, state): (String, String) = sqlx::query_as(
+            "SELECT agent_id,json_extract(snapshot,'$.state') FROM local_runs WHERE id=?",
+        )
+        .bind(id)
+        .fetch_one(&self.store.pool)
+        .await?;
+        Ok(terminal(&state) && self.ensure_idle(&agent).await.is_ok())
+    }
     pub async fn history(&self, agent: &str, session: &str, before: &str) -> Result<Value> {
-        let sessions = sqlx::query("SELECT session_id,prompt FROM local_runs WHERE agent_id=? GROUP BY session_id HAVING rowid=MIN(rowid) ORDER BY MIN(rowid) DESC").bind(agent).fetch_all(&self.store.pool).await?;
+        let sessions = sqlx::query("SELECT session_id,prompt,created_at FROM local_runs WHERE agent_id=? GROUP BY session_id HAVING rowid=MIN(rowid) ORDER BY MIN(rowid) DESC").bind(agent).fetch_all(&self.store.pool).await?;
         let session = if session.is_empty() {
             sessions
                 .first()
@@ -524,9 +654,23 @@ impl LocalRuntime {
         for row in rows.iter().take(20) {
             records.push(self.get(row.get("id"), 0).await?);
         }
-        Ok(
-            json!({ "runs": records, "sessions": sessions.iter().map(|r| json!({"id":r.get::<String,_>("session_id"),"prompt":r.get::<String,_>("prompt")})).collect::<Vec<_>>(), "session_id": session, "next_cursor": if more { rows[19].get::<i64,_>("rowid").to_string() } else { String::new() }, "stream_cursor": "local" }),
-        )
+        let sessions: Vec<_> = sessions
+            .iter()
+            .map(|row| {
+                json!({
+                    "id": row.get::<String, _>("session_id"),
+                    "prompt": row.get::<String, _>("prompt"),
+                    "created_at": row.get::<String, _>("created_at"),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "runs": records,
+            "sessions": sessions,
+            "session_id": session,
+            "next_cursor": if more { rows[19].get::<i64, _>("rowid").to_string() } else { String::new() },
+            "stream_cursor": "local",
+        }))
     }
     pub async fn command(
         &self,
@@ -570,7 +714,15 @@ impl LocalRuntime {
             .control
             .clone();
         let ack = control.command(&command).await?;
-        let value = json!({ "commandId":ack.command_id, "state":ack.state().as_str_name(), "errorCode":ack.error_code });
+        let mut value = json!({ "commandId":ack.command_id, "state":ack.state().as_str_name(), "errorCode":ack.error_code });
+        if let Some(pb::control_command::Payload::Instruction(instruction)) = &command.payload {
+            value["instruction"] = json!(instruction.instruction);
+            value["createdAt"] = json!(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_millis() as u64
+            );
+        }
         sqlx::query("INSERT INTO local_commands VALUES(?,?,?,?)")
             .bind(&command_id)
             .bind(id)
@@ -583,6 +735,14 @@ impl LocalRuntime {
             Some(pb::control_command::Payload::Cancel(_))
         ) {
             sqlx::query("UPDATE local_runs SET snapshot=json_set(snapshot,'$.cancel_requested',json('true')),version=version+1 WHERE id=?").bind(id).execute(&self.store.pool).await?;
+        } else if matches!(
+            command.payload,
+            Some(pb::control_command::Payload::Instruction(_))
+        ) {
+            sqlx::query("UPDATE local_runs SET version=version+1 WHERE id=?")
+                .bind(id)
+                .execute(&self.store.pool)
+                .await?;
         }
         Ok(value)
     }
@@ -672,11 +832,6 @@ impl LocalRuntime {
         );
         let mut ids = std::collections::HashSet::new();
         for requirement in &project.requirements {
-            let old_tasks = current
-                .as_ref()
-                .and_then(|p| p.requirements.iter().find(|r| r.id == requirement.id))
-                .map_or(&[][..], |r| r.tasks.as_slice());
-            crate::sdd::validate(&requirement.tasks, old_tasks)?;
             ensure!(
                 !requirement.title.trim().is_empty()
                     && requirement.title.len() <= 240
@@ -685,15 +840,6 @@ impl LocalRuntime {
                     && ids.insert(&requirement.id),
                 "invalid or duplicate requirement"
             );
-            for task in &requirement.tasks {
-                ensure!(
-                    !task.title.trim().is_empty()
-                        && task.title.len() <= 240
-                        && Uuid::parse_str(&task.id).is_ok()
-                        && ids.insert(&task.id),
-                    "invalid or duplicate task"
-                );
-            }
         }
         crate::agents::write_json(
             &self

@@ -8,12 +8,15 @@ import '@fontsource/jetbrains-mono/latin-400.css'
 import { CssBaseline, ThemeProvider } from '@mui/material'
 import { theme } from './theme'
 import App from './App.tsx'
+import { ChatDraftProvider } from './components/ChatDraftProvider'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <App />
+      <ChatDraftProvider>
+        <App />
+      </ChatDraftProvider>
     </ThemeProvider>
   </StrictMode>,
 )

@@ -1,3 +1,5 @@
+export type AgentPermissions = 'full_access' | 'workspace_write' | 'read_only'
+
 export interface AgentConfig {
   name: string
   provider: 'pi' | 'codex'
@@ -8,6 +10,20 @@ export interface AgentConfig {
   native_config?: string | null
   model?: string | null
   prepare?: string | null
+  permissions?: AgentPermissions | null
+  reasoning_effort?: string | null
+  skill_directories?: string[]
+  skill_source?: 'rein' | 'native'
+  disabled_skills?: string[]
+  skills?: AgentSkills
+}
+export interface AgentSkills {
+  names: string[]
+  entries: { name: string; path: string; enabled: boolean }[]
+  rein_spec_installed: boolean
+  install_path: string | null
+  source_path: string
+  error: string | null
 }
 export interface Agent extends AgentConfig {
   id: string
@@ -53,7 +69,6 @@ export interface Requirement {
   id: string
   title: string
   description: string
-  tasks: Task[]
 }
 export interface Project {
   id: string

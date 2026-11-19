@@ -1,26 +1,77 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Alert, Button, InputBase, Paper, Popover, TextField } from '@mui/material'
-import { Copy, Check } from 'lucide-react'
-import type { Agent, AgentEvent, AgentRun, RunRecord, RunUpdate } from '../services/localService'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  Alert,
+  Button,
+  FormControlLabel,
+  InputAdornment,
+  InputBase,
+  Paper,
+  Popover,
+  Radio,
+  RadioGroup,
+  TextField,
+} from '@mui/material'
+import { Check, ChevronLeft, ChevronRight, Copy, History, Plus, Search } from 'lucide-react'
+import type {
+  Agent,
+  AgentEvent,
+  AgentRun,
+  HistoryPage,
+  RunRecord,
+  RunUpdate,
+} from '../services/localService'
+import {
+  chatErrorMessage,
   decodeJson,
+  instructionError,
   localService,
   runStateLabel,
   terminalRun,
   toUpdate,
+  request,
 } from '../services/localService'
-import { Action, AgentAvatar, Icon } from './shared'
+import { Action, AgentAvatar, ChatSendButton, Icon } from './shared'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { workflowService, type Spec, type Conversation } from '../services/workflow'
+import {
+  taskMessagePreview,
+  workflowService,
+  type Spec,
+  type Conversation,
+  type TaskMessage,
+  type WorkflowSnapshot,
+} from '../services/workflow'
+import { reinService } from '../services/reinService'
+import { RunChanges } from './RunChanges'
+import { HandoffLinks } from './HandoffLinks'
+import { chatEnter, steerShortcut, useChatDraft } from './chatDraft'
+import { FollowupStatus } from './FollowupStatus'
+
+function visiblePrompt(prompt: string) {
+  const marker = '\nREIN_SPEC_USER_MESSAGE:\n'
+  const index = prompt.lastIndexOf(marker)
+  if (index >= 0) {
+    try {
+      const message = JSON.parse(prompt.slice(index + marker.length)) as { text?: string }
+      if (typeof message.text === 'string') return message.text
+    } catch {
+      /* Older records still display their saved prompt. */
+    }
+  }
+  return prompt.split('\nUSER MESSAGE:\n').pop() ?? prompt
+}
 
 type LoadedRun = RunUpdate
 type Interaction = NonNullable<AgentEvent['interaction']>
+type SessionSummary = HistoryPage['sessions'][number]
+function pendingRecord(run: AgentRun, prompt: string): LoadedRun {
+  return { version: '0', run, prompt, created_at: new Date().toISOString(), events: [] }
+}
 function savedSession(agentId: string) {
   try {
-    return localStorage.getItem(`rein.session.${agentId}`) || ''
+    return localStorage.getItem(`rein.session.${agentId}`)
   } catch {
-    return ''
+    return null
   }
 }
 function persistSession(agentId: string, session: string) {
@@ -39,6 +90,12 @@ export function AgentChat({
   conversation,
   title,
   onSettings,
+  hasUnsavedSpec,
+  onActiveChange,
+  messages = [],
+  members = [],
+  workflow,
+  onTask,
 }: {
   agent: Agent
   userName: string
@@ -47,28 +104,51 @@ export function AgentChat({
   conversation?: Conversation
   title?: string
   onSettings?: () => void
+  hasUnsavedSpec?: () => boolean
+  onActiveChange?: (active: boolean) => void
+  messages?: TaskMessage[]
+  members?: Agent[]
+  workflow?: WorkflowSnapshot
+  onTask?: (id: string) => void
 }) {
   const contextId = spec?.id ?? conversation?.id ?? ''
   const [records, setRecords] = useState<LoadedRun[]>([])
   const cache = useRef(new Map<string, LoadedRun>())
-  const [session, setSession] = useState(
+  const [selectedSession, setSession] = useState(
     () => spec?.session_id ?? conversation?.session_id ?? savedSession(agent.id),
   )
+  const session = selectedSession ?? ''
   const sessionRef = useRef(session)
-  const [draft, setDraft] = useState('')
+  const draftKey = spec
+    ? `spec:${spec.id}`
+    : conversation
+      ? `scope:${conversation.requirement_id}`
+      : `agent:${agent.id}:${session}`
+  const {
+    draft,
+    setDraft,
+    sending,
+    setSending,
+    finishSend,
+    queued,
+    queueFollowup,
+    withdrawFollowup,
+  } = useChatDraft(draftKey)
   const [error, setError] = useState('')
   const [pollError, setPollError] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasMore, setHasMore] = useState(false)
-  const [sessions, setSessions] = useState<{ id: string; prompt: string }[]>([])
-  const [sending, setSending] = useState(false)
+  const [sessions, setSessions] = useState<SessionSummary[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const historyButton = useRef<HTMLButtonElement>(null)
+  const [starting, setStarting] = useState(false)
   const [cancelling, setCancelling] = useState<string>()
   const sendRequest = useRef<{ key: string; id: string } | null>(null)
   const cancelRequest = useRef(new Map<string, string>())
   const log = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLTextAreaElement>(null)
-  const freshSession = useRef(false)
+  const freshSession = useRef(!contextId && selectedSession === '')
   const loadHistory = useRef<(session: string, older: boolean) => Promise<void>>(async () => {})
   const cursors = useRef(new Map<string, string>())
   const cancelHistory = useRef<() => void>(() => {})
@@ -95,6 +175,14 @@ export function AgentChat({
       ),
     })
   }
+  function rememberSession(record: RunRecord) {
+    const { sessionId: id } = record.run
+    setSessions((previous) =>
+      previous.some((item) => item.id === id)
+        ? previous
+        : [{ id, prompt: record.prompt, created_at: record.created_at }, ...previous],
+    )
+  }
   function chooseSession(value: string, fetchHistory = true) {
     sessionRef.current = value
     setSession(value)
@@ -105,6 +193,10 @@ export function AgentChat({
       if (value) void loadHistory.current(value, false)
       else cancelHistory.current()
     }
+  }
+  function closeSessionHistory() {
+    setHistoryOpen(false)
+    requestAnimationFrame(() => historyButton.current?.focus())
   }
   useEffect(() => {
     let disposed = false
@@ -137,11 +229,7 @@ export function AgentChat({
         try {
           const record = toUpdate(JSON.parse(message.data))
           merge(record)
-          setSessions((previous) =>
-            previous.some((item) => item.id === record.run.sessionId)
-              ? previous
-              : [{ id: record.run.sessionId, prompt: record.prompt }, ...previous],
-          )
+          rememberSession(record)
           publishRecords()
         } catch {
           source?.close()
@@ -232,10 +320,32 @@ export function AgentChat({
     }
   }, [agent.id, contextId])
   const visible = records.filter((record) => record.run.sessionId === session)
+  const timeline = [
+    ...visible.map((record) => ({
+      kind: 'run' as const,
+      record,
+      time: Date.parse(record.created_at),
+    })),
+    ...messages.map((message) => ({
+      kind: 'task' as const,
+      message,
+      time: message.created_at,
+      ...taskMessagePreview(message, workflow),
+    })),
+  ].sort((a, b) => a.time - b.time)
   const active = visible.find((record) => !terminalRun(record.run))
+  const canGuide =
+    agent.backend === 'native' &&
+    active?.run.state === 'RUN_STATE_RUNNING' &&
+    !active.run.cancelRequested
+  const running = Boolean(active || sending || starting || loading)
+  useEffect(() => {
+    onActiveChange?.(running)
+    return () => onActiveChange?.(false)
+  }, [running, onActiveChange])
   useLayoutEffect(() => {
     const panel = log.current
-    if (!panel) return
+    if (!panel || historyOpen) return
     if (restoreScroll.current) {
       const anchor = panel.querySelector<HTMLElement>(
         `[data-run-anchor="${CSS.escape(restoreScroll.current.key)}"]`,
@@ -243,48 +353,93 @@ export function AgentChat({
       if (anchor) panel.scrollTop += anchor.getBoundingClientRect().top - restoreScroll.current.top
       restoreScroll.current = null
     } else if (followBottom.current) panel.scrollTop = panel.scrollHeight
-  }, [records, session])
-  async function send() {
-    if (!draft.trim() || loading || sending || active || !agent.online) return
-    if (new TextEncoder().encode(draft).length > 48 * 1024) {
-      setError('消息不能超过 48 KiB，请缩短后重试。')
-      return
+  }, [records, session, messages.length, historyOpen])
+  async function postChat(text: string, requestId: string, expectedSession?: string) {
+    if (spec && hasUnsavedSpec?.()) {
+      throw new Error('请先保存右侧 Spec 草稿，再继续对话或确认阶段。')
     }
-    const key = `${session}:${draft}`
-    if (sendRequest.current?.key !== key) sendRequest.current = { key, id: crypto.randomUUID() }
-    setSending(true)
-    setError('')
-    try {
-      const response = conversation
-        ? await workflowService.requirementChat(
-            conversation.requirement_id,
-            draft.trim(),
-            sendRequest.current.id,
-          )
-        : spec
-          ? await workflowService.chat(spec.id, draft.trim(), sendRequest.current.id)
-          : await localService.create(agent.id, session, draft.trim(), sendRequest.current.id)
-      const record = cache.current.get(response.run.id) || {
-        version: '0',
-        run: response.run,
-        prompt: draft.trim(),
-        created_at: new Date().toISOString(),
-        events: [],
-      }
-      cache.current.set(response.run.id, record)
-      setRecords((previous) => [
-        ...previous.filter((item) => item.run.id !== response.run.id),
-        record,
-      ])
+    const response = conversation
+      ? await workflowService.requirementChat(
+          conversation.requirement_id,
+          text,
+          requestId,
+          expectedSession,
+        )
+      : spec
+        ? await workflowService.chat(spec.id, text, requestId, undefined, expectedSession)
+        : await localService.create(agent.id, session, text, requestId)
+    const record = cache.current.get(response.run.id) ?? pendingRecord(response.run, text)
+    cache.current.set(response.run.id, record)
+    if (!contextId) rememberSession(record)
+    publishRecords()
+    const stillSelected = sessionRef.current === session
+    if (stillSelected) {
       chooseSession(response.run.sessionId, false)
       freshSession.current = false
-      setDraft('')
+    }
+    return stillSelected && !contextId && !session
+      ? `agent:${agent.id}:${response.run.sessionId}`
+      : draftKey
+  }
+  async function send(steer = false) {
+    const text = draft.trim()
+    if (!text || loading || sending || !agent.online || (steer ? !canGuide : queued)) return
+    if (spec && hasUnsavedSpec?.()) {
+      setError('请先保存右侧 Spec 草稿，再继续对话或确认阶段。')
+      return
+    }
+    const limit = contextId && !steer ? 32 : 48
+    if (new TextEncoder().encode(text).length > limit * 1024) {
+      setError(`消息不能超过 ${limit} KiB，请缩短后重试。`)
+      return
+    }
+    setError('')
+    if (active && !steer) {
+      await queueFollowup(active.run.id, async (text, requestId) => {
+        await postChat(text, requestId, active.run.sessionId)
+      })
+      return
+    }
+    const key = `${steer ? active?.run.attemptId : session}:${draft}`
+    if (sendRequest.current?.key !== key) sendRequest.current = { key, id: crypto.randomUUID() }
+    setSending(true)
+    try {
+      if (steer && active) {
+        const ack = await localService.instruct(active.run, text, sendRequest.current.id)
+        const error = instructionError(ack)
+        if (error) {
+          if (ack.state === 'COMMAND_ACK_STATE_REJECTED') sendRequest.current = null
+          throw new Error(error)
+        }
+        finishSend()
+      } else {
+        finishSend(await postChat(text, sendRequest.current.id))
+      }
       sendRequest.current = null
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : '发送失败，消息已保留，请重试。')
+      setError(
+        failure instanceof Error
+          ? chatErrorMessage(failure.message, visible.at(-1))
+          : '发送失败，消息已保留，请重试。',
+      )
     } finally {
       setSending(false)
-      input.current?.focus()
+      if (document.activeElement === document.body || document.activeElement?.closest('.composer'))
+        input.current?.focus()
+    }
+  }
+  async function begin() {
+    if (!spec) return
+    setStarting(true)
+    setError('')
+    try {
+      await workflowService.beginSpec(spec.id)
+      await reinService.refreshWorkflow()
+      await loadHistory.current(sessionRef.current, false)
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '开始对话失败，请重试。')
+    } finally {
+      setStarting(false)
     }
   }
   async function cancel(run: AgentRun) {
@@ -319,7 +474,6 @@ export function AgentChat({
             · {agent.disabled ? 'Agent 已下线' : agent.online ? '在线' : 'reind 离线'}
           </span>
         </div>
-        <span className="spacer" />
         {contextId ? (
           <Action
             label={conversation ? '需求配置' : 'Spec 配置'}
@@ -327,38 +481,30 @@ export function AgentChat({
             onClick={() => onSettings?.()}
           />
         ) : (
-          <Button
-            size="small"
-            onClick={() => {
-              freshSession.current = true
-              chooseSession('')
-              setDraft('')
-            }}
-          >
-            新对话
-          </Button>
+          <Fragment>
+            {!historyOpen && (
+              <Button
+                ref={historyButton}
+                color="inherit"
+                startIcon={<Icon name={History} />}
+                onClick={() => setHistoryOpen(true)}
+              >
+                会话历史
+              </Button>
+            )}
+            <Button
+              startIcon={<Icon name={Plus} />}
+              onClick={() => {
+                freshSession.current = true
+                chooseSession('')
+                setHistoryOpen(false)
+              }}
+            >
+              新对话
+            </Button>
+          </Fragment>
         )}
       </header>
-      {!contextId && (
-        <div className="hub-session-bar">
-          <label htmlFor={`session-${agent.id}`}>会话</label>
-          <select
-            id={`session-${agent.id}`}
-            value={session}
-            onChange={(event) => {
-              freshSession.current = !event.target.value
-              chooseSession(event.target.value)
-            }}
-          >
-            <option value="">新会话</option>
-            {sessions.map((record) => (
-              <option key={record.id} value={record.id}>
-                {record.prompt.slice(0, 48)}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
       {(error || pollError) && (
         <Alert
           severity="error"
@@ -383,14 +529,31 @@ export function AgentChat({
             : 'Daemon 当前离线。执行记录仍可查看，连接恢复后可继续对话。'}
         </Alert>
       )}
+      {historyOpen && (
+        <SessionHistory
+          sessions={sessions}
+          session={session}
+          loading={loading}
+          onBack={closeSessionHistory}
+          onSelect={(id) => {
+            if (id !== session) {
+              freshSession.current = false
+              chooseSession(id)
+            }
+            closeSessionHistory()
+          }}
+        />
+      )}
       <div
         className="messages"
+        hidden={historyOpen}
         ref={log}
         role="log"
         aria-label={`${agent.name}的聊天记录`}
         aria-live="polite"
         aria-busy={loading}
         onScroll={(event) => {
+          if (historyOpen) return
           const panel = event.currentTarget
           followBottom.current = panel.scrollHeight - panel.clientHeight - panel.scrollTop < 64
           if (panel.scrollTop < 40 && hasMore && !loading && !loadingOlder)
@@ -408,30 +571,99 @@ export function AgentChat({
             {loadingOlder ? '正在加载更早记录…' : '加载更早记录'}
           </Button>
         )}
-        {!visible.length && (
+        {!timeline.length && (
           <div className="empty-message">
             <Icon name="chat" />
             <p>{loading ? '正在读取执行记录…' : `与 ${agent.name} 开始对话`}</p>
-            <span>消息会交给已注册的 Agent 执行。</span>
+            {spec ? (
+              <Button
+                variant="contained"
+                disabled={loading || starting || !agent.online}
+                onClick={() => void begin()}
+              >
+                {starting ? '正在开始…' : spec.error ? '重试开始对话' : '开始 Spec 对话'}
+              </Button>
+            ) : (
+              <span>消息会交给已注册的 Agent 执行。</span>
+            )}
           </div>
         )}
-        {visible.map((record) => (
-          <RunMessages
-            key={record.run.id}
-            record={
-              contextId
-                ? {
-                    ...record,
-                    prompt: record.prompt.split('\nUSER MESSAGE:\n').pop() ?? record.prompt,
-                  }
-                : record
-            }
-            agent={agent}
-            userName={userName}
-          />
-        ))}
+        {timeline.map((item) =>
+          item.kind === 'run' ? (
+            <RunMessages
+              key={item.record.run.id}
+              record={
+                contextId
+                  ? {
+                      ...item.record,
+                      prompt: visiblePrompt(item.record.prompt),
+                    }
+                  : item.record
+              }
+              agent={agent}
+              userName={userName}
+            />
+          ) : (
+            <Fragment key={item.message.id}>
+              <article
+                className="message agent-message"
+                key={item.message.id}
+                data-task-message={item.message.kind}
+              >
+                <AgentAvatar
+                  agent={members.find((agent) => agent.id === item.message.agent_id)}
+                  runtime
+                />
+                <div className="message-content">
+                  <div className="message-author">
+                    <strong>
+                      {members.find((agent) => agent.id === item.message.agent_id)?.name ||
+                        item.message.agent_id}
+                    </strong>
+                    <time dateTime={new Date(item.message.created_at).toISOString()}>
+                      {new Date(item.message.created_at).toLocaleTimeString('zh-CN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </time>
+                  </div>
+                  <Paper
+                    elevation={0}
+                    className={`message-bubble${item.message.kind === 'waiting' ? ' waiting-message' : ''}`}
+                  >
+                    <span>{item.content.replaceAll('@用户', `@${userName}`)}</span>
+                  </Paper>
+                  {item.preview && <HandoffLinks {...item.preview} />}
+                  {onTask && (
+                    <Button onClick={() => onTask(item.message.task_id)}>
+                      {item.message.kind === 'waiting' ? '查看任务交互' : '查看任务'}
+                    </Button>
+                  )}
+                  {item.message.update_error && (
+                    <Button
+                      onClick={() =>
+                        void workflowService
+                          .retryTaskUpdate(item.message.id)
+                          .then(() => reinService.refreshWorkflow())
+                          .catch((failure) => setError(String(failure)))
+                      }
+                    >
+                      重试文档同步
+                    </Button>
+                  )}
+                </div>
+              </article>
+              {item.message.kind === 'update_waiting' &&
+                item.message.run_id &&
+                messages.findLast(
+                  (message) =>
+                    message.kind === 'update_waiting' && message.run_id === item.message.run_id,
+                )?.id === item.message.id && <RunInteraction id={item.message.run_id} />}
+            </Fragment>
+          ),
+        )}
       </div>
-      <div className="composer-dock">
+      <div className="composer-dock hub-composer-dock" hidden={historyOpen}>
         {active && (
           <div className="hub-run-status" role="status">
             <span>
@@ -450,6 +682,7 @@ export function AgentChat({
             </Button>
           </div>
         )}
+        {queued && <FollowupStatus followup={queued} onWithdraw={withdrawFollowup} />}
         <Paper
           component="form"
           variant="outlined"
@@ -465,37 +698,174 @@ export function AgentChat({
             maxRows={5}
             fullWidth
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={active ? '执行结束后可继续发送；草稿会保留' : `发送给 ${agent.name}…`}
+            onChange={(event) => {
+              if (!contextId && !session && !freshSession.current) {
+                freshSession.current = true
+                persistSession(agent.id, '')
+              }
+              setDraft(event.target.value)
+            }}
+            placeholder={`发送给 ${agent.name}…`}
             inputProps={{ 'aria-label': '发送消息' }}
             onKeyDown={(event) => {
-              if (
-                event.key === 'Enter' &&
-                !event.nativeEvent.isComposing &&
-                !event.shiftKey &&
-                (sendMode === 'Enter 发送' || event.ctrlKey || event.metaKey)
-              ) {
-                event.preventDefault()
-                void send()
-              }
+              const action = chatEnter(event, !!active, sendMode)
+              if (action) void send(action === 'steer')
             }}
           />
           <div className="composer-actions">
             <span className="hub-connection-note">
-              {agent.backend === 'native' ? '原生 Agent' : 'A2A Agent'}
+              {active
+                ? canGuide
+                  ? `Enter 排队 · ${steerShortcut} 立即指导`
+                  : 'Enter 排队，结束后发送'
+                : agent.backend === 'native'
+                  ? '原生 Agent'
+                  : 'A2A Agent'}
             </span>
             <span className="spacer" />
-            <Button
-              type="submit"
-              variant="contained"
-              aria-label="发送消息按钮"
-              disabled={loading || sending || !!active || !agent.online || !draft.trim()}
+            {canGuide && (
+              <Button
+                size="small"
+                disabled={loading || sending || !agent.online || !draft.trim()}
+                onClick={() => void send(true)}
+              >
+                发送指导
+              </Button>
+            )}
+            <ChatSendButton
+              label={active ? '排队发送' : '发送消息按钮'}
+              sendMode={sendMode}
+              active={!!active}
+              canGuide={canGuide}
+              disabled={loading || sending || !!queued || !agent.online || !draft.trim()}
               className="send-button"
-            >
-              <Icon name="send" />
-            </Button>
+            />
           </div>
         </Paper>
+      </div>
+    </section>
+  )
+}
+
+function sessionText(prompt: string) {
+  const text = visiblePrompt(prompt).trim()
+  if (text.startsWith('REIN TASK RUNTIME\n')) {
+    return {
+      title: text.match(/^TITLE: (.+)$/m)?.[1] || '任务执行',
+      preview: text.match(/^DESCRIPTION: (.+)$/m)?.[1] || '',
+    }
+  }
+  if (text.startsWith('REIN SPEC TASK UPDATE\n')) {
+    const payload = text.split('\nTASK_UPDATE_JSON: ').at(-1) ?? ''
+    let preview = ''
+    try {
+      const update = decodeJson<{ report?: string }>(payload)
+      if (typeof update?.report === 'string') preview = update.report.trim()
+    } catch {
+      // Older records may lack a structured report.
+    }
+    return { title: '同步 Spec 任务状态', preview }
+  }
+  const [title, ...rest] = text.split('\n')
+  return { title: title.trim() || '未命名会话', preview: rest.join(' ').trim() }
+}
+
+function SessionHistory({
+  sessions,
+  session,
+  loading,
+  onBack,
+  onSelect,
+}: {
+  sessions: SessionSummary[]
+  session: string
+  loading: boolean
+  onBack: () => void
+  onSelect: (id: string) => void
+}) {
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [query, setQuery] = useState('')
+  const [today] = useState(() => new Date())
+  const term = query.trim().toLowerCase()
+  const entries = useMemo(
+    () => sessions.map((item) => ({ ...item, ...sessionText(item.prompt) })),
+    [sessions],
+  ).filter(({ title, preview }) => `${title} ${preview}`.toLowerCase().includes(term))
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+
+  useLayoutEffect(() => heading.current?.focus(), [])
+
+  return (
+    <section className="hub-session-history" aria-label="会话历史" aria-busy={loading}>
+      <div className="hub-session-history-content">
+        <Button color="inherit" startIcon={<Icon name={ChevronLeft} />} onClick={onBack}>
+          返回对话
+        </Button>
+        <h2 ref={heading} tabIndex={-1}>
+          会话历史
+        </h2>
+        <TextField
+          type="search"
+          fullWidth
+          value={query}
+          placeholder="搜索会话"
+          onChange={(event) => setQuery(event.target.value)}
+          slotProps={{
+            htmlInput: { 'aria-label': '搜索会话' },
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Icon name={Search} size={17} />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        {entries.length ? (
+          <ul>
+            {entries.map(({ id, title, preview, created_at }) => {
+              const date = created_at ? new Date(created_at) : null
+              return (
+                <li key={id}>
+                  <button
+                    type="button"
+                    className="hub-session-history-row"
+                    aria-current={id === session || undefined}
+                    onClick={() => onSelect(id)}
+                  >
+                    <span className="hub-session-history-label">
+                      <span>
+                        <strong title={title}>{title}</strong>
+                        {id === session && <small>当前会话</small>}
+                      </span>
+                      {preview && <span className="hub-session-history-preview">{preview}</span>}
+                    </span>
+                    {date && Number.isFinite(date.getTime()) && (
+                      <time dateTime={created_at}>
+                        {date.toDateString() === today.toDateString()
+                          ? '今天'
+                          : date.toDateString() === yesterday.toDateString()
+                            ? '昨天'
+                            : date.toLocaleDateString('zh-CN', {
+                                month: 'short',
+                                day: 'numeric',
+                                year:
+                                  date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+                              })}
+                      </time>
+                    )}
+                    <Icon name={ChevronRight} />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        ) : (
+          <p className="hub-session-history-empty" role="status">
+            {loading ? '正在读取会话历史…' : term ? '没有找到匹配的会话' : '还没有会话'}
+          </p>
+        )}
       </div>
     </section>
   )
@@ -505,11 +875,14 @@ export function RunMessages({
   record,
   agent,
   userName,
+  directory = agent.directory ?? undefined,
 }: {
   record: LoadedRun
   agent: Agent
   userName: string
+  directory?: string
 }) {
+  const changeRecords = useMemo(() => [record], [record])
   const [now, setNow] = useState(Date.now)
   const [infoAnchor, setInfoAnchor] = useState<HTMLElement | null>(null)
   const [copyStatus, setCopyStatus] = useState('')
@@ -554,7 +927,10 @@ export function RunMessages({
       })
     }
     if (event.interaction) interaction = event.interaction
-    if (event.error && !errors.includes(event.error.message)) errors.push(event.error.message)
+    if (event.error) {
+      const message = chatErrorMessage(event.error.message)
+      if (!errors.includes(message)) errors.push(message)
+    }
   }
   const waiting = ['RUN_STATE_WAITING_APPROVAL', 'RUN_STATE_WAITING_INPUT'].includes(
     record.run.state,
@@ -638,21 +1014,47 @@ export function RunMessages({
   }
   return (
     <>
-      <article className="message own" data-run-anchor={`${record.run.id}-user`}>
-        <div className="message-content">
-          <div className="message-author">
-            <span>
-              {userName}　{when}
-            </span>
+      {!record.prompt.startsWith('REIN SPEC TASK UPDATE\n') && (
+        <article className="message own" data-run-anchor={`${record.run.id}-user`}>
+          <div className="message-content">
+            <div className="message-author">
+              <span>
+                {userName}　{when}
+              </span>
+            </div>
+            <div className="message-bubble-row">
+              <Paper elevation={0} className="message-bubble">
+                <span>{record.prompt}</span>
+              </Paper>
+              <AgentAvatar />
+            </div>
           </div>
-          <div className="message-bubble-row">
-            <Paper elevation={0} className="message-bubble">
-              <span>{record.prompt}</span>
-            </Paper>
-            <AgentAvatar />
-          </div>
-        </div>
-      </article>
+        </article>
+      )}
+      {record.command_acks
+        ?.filter((ack) => ack.instruction)
+        .map((ack) => (
+          <article className="message own" key={ack.commandId}>
+            <div className="message-content">
+              <div className="message-author">
+                <span>
+                  你 · 运行中指导 ·{' '}
+                  {ack.state === 'COMMAND_ACK_STATE_APPLIED'
+                    ? 'Agent 已接收'
+                    : ack.state === 'COMMAND_ACK_STATE_REJECTED'
+                      ? '发送失败'
+                      : '接收状态待确认'}
+                </span>
+              </div>
+              <div className="message-bubble-row">
+                <Paper elevation={0} className="message-bubble">
+                  <span>{ack.instruction}</span>
+                </Paper>
+                <AgentAvatar />
+              </div>
+            </div>
+          </article>
+        ))}
       <article className="message agent-message" data-run-anchor={`${record.run.id}-agent`}>
         <AgentAvatar agent={agent} />
         <div className="message-content">
@@ -686,6 +1088,7 @@ export function RunMessages({
             <span className="hub-duration">{durationLabel}</span>
           )}
           {answer && <div className="hub-final-answer">{renderedItems.at(-1)}</div>}
+          <RunChanges records={changeRecords} directory={directory} />
           {!items.size && !errors.length && !waiting && (
             <span className="hub-placeholder">
               {terminalRun(record.run) ? runStateLabel[record.run.state] : '等待 Agent 输出…'}
@@ -696,14 +1099,6 @@ export function RunMessages({
               {error}
             </Alert>
           ))}
-          {waiting && interaction && (
-            <InteractionForm
-              key={`${record.run.attemptId}:${interaction.interactionId}`}
-              run={record.run}
-              interaction={interaction}
-              acknowledgments={record.command_acks || []}
-            />
-          )}
           <div className={`hub-message-actions${infoAnchor ? ' is-open' : ''}`}>
             {answer && (
               <Action
@@ -748,26 +1143,169 @@ export function RunMessages({
           </Popover>
         </div>
       </article>
+      {waiting && interaction && (
+        <InteractionForm
+          key={`${record.run.attemptId}:${interaction.interactionId}`}
+          run={record.run}
+          interaction={interaction}
+          events={record.events}
+          acknowledgments={record.command_acks || []}
+        />
+      )}
     </>
+  )
+}
+
+function RunInteraction({ id }: { id: string }) {
+  const [record, setRecord] = useState<RunUpdate>()
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let disposed = false
+    let timer: number | undefined
+    const controller = new AbortController()
+    async function load() {
+      try {
+        const next = toUpdate(
+          await request<Parameters<typeof toUpdate>[0]>(`/api/runs/${id}`, {
+            signal: controller.signal,
+          }),
+        )
+        if (disposed) return
+        setRecord(next)
+        setError('')
+        if (!terminalRun(next.run)) timer = window.setTimeout(() => void load(), 1000)
+      } catch (failure) {
+        if (!disposed) {
+          setError(String(failure))
+          timer = window.setTimeout(() => void load(), 2000)
+        }
+      }
+    }
+    void load()
+    return () => {
+      disposed = true
+      controller.abort()
+      window.clearTimeout(timer)
+    }
+  }, [id])
+  const interaction = record?.events.findLast((event) => event.interaction)?.interaction
+  return (
+    <>
+      {error && <Alert severity="error">{error}</Alert>}
+      {record &&
+        interaction &&
+        ['RUN_STATE_WAITING_INPUT', 'RUN_STATE_WAITING_APPROVAL'].includes(record.run.state) && (
+          <InteractionForm
+            key={`${record.run.attemptId}:${interaction.interactionId}`}
+            run={record.run}
+            interaction={interaction}
+            events={record.events}
+            acknowledgments={record.command_acks || []}
+          />
+        )}
+    </>
+  )
+}
+
+type QuestionOption = { label: string; description?: string }
+
+function QuestionInput({
+  title,
+  options = [],
+  onAnswer,
+  disabled,
+  secret = false,
+}: {
+  title: string
+  options?: QuestionOption[]
+  onAnswer: (answer: string) => void
+  disabled: boolean
+  secret?: boolean
+}) {
+  const [choice, setChoice] = useState(options.length ? '' : 'custom')
+  const [custom, setCustom] = useState('')
+  return (
+    <fieldset className="hub-question" disabled={disabled}>
+      <legend>{title}</legend>
+      {options.length > 0 && (
+        <RadioGroup
+          aria-label="回答选项"
+          value={choice}
+          onChange={(_, value) => {
+            setChoice(value)
+            onAnswer(value === 'custom' ? custom : options[Number(value)].label)
+          }}
+        >
+          {options.map((option, index) => (
+            <FormControlLabel
+              key={index}
+              value={String(index)}
+              disabled={disabled}
+              control={<Radio size="small" />}
+              label={
+                <span className="hub-question-option">
+                  <strong>{option.label}</strong>
+                  {option.description && <span>{option.description}</span>}
+                </span>
+              }
+            />
+          ))}
+          <FormControlLabel
+            value="custom"
+            disabled={disabled}
+            control={<Radio size="small" />}
+            label="自定义回复"
+          />
+        </RadioGroup>
+      )}
+      <TextField
+        fullWidth
+        size="small"
+        multiline={!secret}
+        type={secret ? 'password' : 'text'}
+        required={choice === 'custom'}
+        disabled={disabled || choice !== 'custom'}
+        label={options.length ? '自定义内容' : '回复内容'}
+        value={custom}
+        onChange={(event) => {
+          setCustom(event.target.value)
+          onAnswer(event.target.value)
+        }}
+      />
+    </fieldset>
   )
 }
 
 function InteractionForm({
   run,
   interaction,
+  events,
   acknowledgments,
 }: {
   run: AgentRun
   interaction: Interaction
+  events: AgentEvent[]
   acknowledgments: NonNullable<RunRecord['command_acks']>
 }) {
   const params = decodeJson<{
     method?: string
     title?: string
     message?: string
+    reason?: string
+    command?: string
+    cwd?: string
+    itemId?: string
     options?: string[]
-    questions?: { id: string; question: string; header?: string }[]
+    questions?: {
+      id: string
+      question: string
+      header?: string
+      options?: QuestionOption[]
+      isSecret?: boolean
+    }[]
   }>(interaction.parametersJson)
+  const tool = events.findLast((event) => event.tool?.callId === params.itemId)?.tool
+  const details = { ...decodeJson(tool?.inputJson || ''), ...params }
   const [value, setValue] = useState('')
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
@@ -803,6 +1341,22 @@ function InteractionForm({
     <Paper variant="outlined" className="hub-interaction" aria-label="Agent 交互请求">
       <h3>{interaction.approvalRequired ? 'Agent 请求审批' : params.title || 'Agent 等待回复'}</h3>
       {params.message && <p>{params.message}</p>}
+      {interaction.approvalRequired && (
+        <div className="hub-interaction-details">
+          {params.title && <p>{params.title}</p>}
+          {params.reason && <p>{params.reason}</p>}
+          {typeof details.command === 'string' && <pre>{details.command}</pre>}
+          {params.cwd && (
+            <p>
+              工作目录：<code>{params.cwd}</code>
+            </p>
+          )}
+          <details>
+            <summary>请求详情</summary>
+            <pre>{JSON.stringify({ method: interaction.method, ...details }, null, 2)}</pre>
+          </details>
+        </div>
+      )}
       {(error || rejected) && (
         <Alert severity="error">{error || 'Agent 拒绝了该回复。请检查内容后重试。'}</Alert>
       )}
@@ -816,15 +1370,6 @@ function InteractionForm({
       {interaction.approvalRequired || confirm ? (
         <div className="hub-interaction-actions">
           <Button
-            variant="contained"
-            disabled={disabled}
-            onClick={() => {
-              void reply(confirm ? { confirmed: true } : { decision: 'accept' })
-            }}
-          >
-            {confirm ? '确认' : '批准'}
-          </Button>
-          <Button
             variant="outlined"
             disabled={disabled}
             onClick={() => {
@@ -833,12 +1378,30 @@ function InteractionForm({
           >
             {confirm ? '取消' : '拒绝'}
           </Button>
+          <Button
+            variant="contained"
+            disabled={disabled}
+            onClick={() => {
+              void reply(confirm ? { confirmed: true } : { decision: 'accept' })
+            }}
+          >
+            {confirm ? '确认' : '批准'}
+          </Button>
         </div>
       ) : (
         <form
           onSubmit={(event) => {
             event.preventDefault()
             if (questions) {
+              if (
+                questions.some(
+                  (question) =>
+                    typeof answers[question.id] !== 'string' || !answers[question.id].trim(),
+                )
+              ) {
+                setError('请为每个问题选择选项或填写自定义回复。')
+                return
+              }
               void reply({
                 answers: Object.fromEntries(
                   questions.map((question) => [
@@ -847,6 +1410,8 @@ function InteractionForm({
                   ]),
                 ),
               })
+            } else if (params.method === 'select' && !value.trim()) {
+              setError('请选择一个选项或填写自定义回复。')
             } else if (interaction.method === 'a2a.message') {
               void reply({ text: value })
             } else if (interaction.method === 'extension_ui_request') {
@@ -862,33 +1427,28 @@ function InteractionForm({
         >
           {questions ? (
             questions.map((question) => (
-              <TextField
+              <QuestionInput
                 key={question.id}
-                required
-                fullWidth
-                size="small"
-                label={question.question || question.header || question.id}
-                value={answers[question.id] || ''}
-                onChange={(event) =>
-                  setAnswers((previous) => ({ ...previous, [question.id]: event.target.value }))
+                title={
+                  question.header
+                    ? `${question.header}：${question.question}`
+                    : question.question || question.id
+                }
+                options={question.options ?? []}
+                secret={question.isSecret}
+                disabled={disabled}
+                onAnswer={(answer) =>
+                  setAnswers((previous) => ({ ...previous, [question.id]: answer }))
                 }
               />
             ))
           ) : params.method === 'select' && params.options ? (
-            <label>
-              回复选项
-              <select
-                required
-                aria-label="回复选项"
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-              >
-                <option value="">请选择</option>
-                {params.options.map((option) => (
-                  <option key={option}>{option}</option>
-                ))}
-              </select>
-            </label>
+            <QuestionInput
+              title="回复选项"
+              options={params.options.map((label) => ({ label }))}
+              disabled={disabled}
+              onAnswer={setValue}
+            />
           ) : (
             <TextField
               required

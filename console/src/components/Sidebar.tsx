@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Divider, IconButton, ListItemButton, OutlinedInput, Tooltip } from '@mui/material'
 import type { Agent, AppData, ChatScope, Project, Requirement } from '../types'
 import { Action, AgentAvatar, Icon, StatusDot } from './shared'
+import { AgentLabels } from './AgentLabels'
+import { NodeStatus } from './NodeStatus'
 
 import { reinService } from '../services/reinService'
 
@@ -43,7 +45,9 @@ export function Sidebar({
       matches(project.name) ||
       data.requirements.some((r) => r.projectId === project.id && matches(r.title)),
   )
-  const visibleProjects = search ? projects : projects.slice(0, visibleCount)
+  const visibleProjects = search
+    ? projects
+    : projects.filter((project, index) => index < visibleCount || project.id === currentProjectId)
   return (
     <aside className="sidebar" aria-label="项目导航">
       <div className="workspace-header">
@@ -129,6 +133,7 @@ export function Sidebar({
                                 <ListItemButton
                                   component="button"
                                   className="tree-child"
+                                  aria-label={requirement.title}
                                   selected={scope.id === requirement.id}
                                   onClick={() =>
                                     onScope({
@@ -142,6 +147,7 @@ export function Sidebar({
                                 >
                                   <Icon name="requirement" />
                                   <span className="nav-text">{requirement.title}</span>
+                                  <NodeStatus requirementId={requirement.id} />
                                 </ListItemButton>
                                 <Action
                                   label={`编辑需求 ${requirement.title}`}
@@ -178,6 +184,7 @@ export function Sidebar({
                                     >
                                       <Icon name="spec" />
                                       <span className="nav-text">{spec.title}</span>
+                                      <NodeStatus specId={spec.id} />
                                     </ListItemButton>
                                   ))}
                               </div>
@@ -250,7 +257,10 @@ export function Sidebar({
                 >
                   <AgentAvatar agent={agent} size={20} />
                   <StatusDot online={agent.online} />
-                  <span className="nav-text">{agent.name}</span>
+                  <span className="agent-roster-identity">
+                    <span className="nav-text">{agent.name}</span>
+                    <AgentLabels agent={agent} settings={data.workflow?.settings} />
+                  </span>
                 </ListItemButton>
                 <Action
                   label={`${agent.name}设置`}

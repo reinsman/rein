@@ -23,6 +23,7 @@ import { Sidebar, SidebarRail } from './components/Sidebar'
 import { EntityDialog } from './components/EntityDialog'
 import type { EntityEditor } from './components/EntityDialog'
 import { MemoryPanel } from './components/MemoryPanel'
+import { NodeStatusProvider } from './components/NodeStatus'
 import { Chat } from './components/Chat'
 import { TaskPanel } from './components/TaskPanel'
 import { SpecPanel } from './components/SpecPanel'
@@ -37,17 +38,27 @@ import type { QueueRole } from './services/workflow'
 import { statusColors } from './theme'
 import './App.css'
 
+const minimumPaneWidth = 360
+
 export default function App() {
+  const [initialNavigation] = useState(preferencesService.navigation)
+  const [navigationReady, setNavigationReady] = useState(!initialNavigation)
+  const pendingNavigation = useRef(initialNavigation)
+  const projectsReady = useRef(false)
   const [data, setData] = useState<AppData | null>(null)
-  const [scope, setScope] = useState<ChatScope>(defaultScope)
-  const [currentProjectId, setCurrentProjectId] = useState(defaultScope.projectId!)
+  const [scope, setScope] = useState<ChatScope>(initialNavigation?.scope ?? defaultScope)
+  const [currentProjectId, setCurrentProjectId] = useState(
+    initialNavigation?.currentProjectId ?? defaultScope.projectId!,
+  )
   const [currentRequirementId, setCurrentRequirementId] = useState<string | undefined>(
-    defaultScope.requirementId,
+    initialNavigation?.currentRequirementId ?? defaultScope.requirementId,
   )
   const [entityEditor, setEntityEditor] = useState<EntityEditor | null>(null)
   const [sidebarVisible, setSidebarVisible] = useState(preferencesService.sidebar)
   const [mobileNav, setMobileNav] = useState(false)
-  const [mobilePanel, setMobilePanel] = useState<'chat' | 'tasks'>('chat')
+  const [mobilePanel, setMobilePanel] = useState<'chat' | 'tasks'>(
+    initialNavigation?.mobilePanel ?? 'chat',
+  )
   const [split, setSplit] = useState(preferencesService.split)
   const [dragging, setDragging] = useState(false)
   const [selectedTask, setSelectedTask] = useState<string | null>(null)
@@ -69,7 +80,8 @@ export default function App() {
   const [taskRole, setTaskRole] = useState<QueueRole>('coding')
   const splitRef = useRef<HTMLDivElement>(null)
   const taskOpenerRef = useRef<HTMLElement | null>(null)
-  const specDirtyRef = useRef(false)
+  const dirtySpec = useRef<string | undefined>(undefined)
+  const [specRunning, setSpecRunning] = useState(false)
   const [lastTaskId, setLastTaskId] = useState('T-24')
   const compact = useMediaQuery('(max-width: 1199px)')
   const mobile = useMediaQuery('(max-width: 899px)')
@@ -77,7 +89,10 @@ export default function App() {
   // Normalize against the expanded sidebar so collapsing it gives all released space to Todo.
   const referenceWidth = Math.max(1, viewportWidth - 296 - 1)
   const workspaceWidth = viewportWidth - (!compact && sidebarVisible ? 296 : 56) - 1
-  const chatWidth = Math.max(360, Math.min(workspaceWidth - 360, split * referenceWidth))
+  const chatWidth = Math.max(
+    minimumPaneWidth,
+    Math.min(workspaceWidth - minimumPaneWidth, split * referenceWidth),
+  )
   const splitValueRef = useRef(split)
   useEffect(() => {
     const resize = () => setViewportWidth(window.innerWidth)
@@ -85,9 +100,94 @@ export default function App() {
     return () => window.removeEventListener('resize', resize)
   }, [])
   useEffect(() => {
-    void reinService.getData().then(setData)
-    return reinService.subscribe(setData)
+    let disposed = false
+    function receive(value: AppData) {
+      if (disposed) return
+      setData(value)
+      const pending = pendingNavigation.current
+      if (!pending || !projectsReady.current || value.projectError) return
+      const saved = pending.scope
+      if (saved.agentId && (value.agentLoading || value.agentError)) return
+      if ((saved.specId || pending.selectedTask) && (!value.workflow || value.workflowError)) return
+      const spec = value.workflow?.specs.find((item) => item.id === saved.specId)
+      const agent = value.agents.find((item) => item.id === saved.agentId)
+      const requirement = value.requirements.find(
+        (item) => item.id === (spec?.requirement_id ?? saved.requirementId),
+      )
+      const project = value.projects.find(
+        (item) =>
+          item.id === (requirement?.projectId ?? saved.projectId ?? pending.currentProjectId),
+      )
+      const next: ChatScope =
+        spec && requirement
+          ? {
+              id: spec.id,
+              title: `${requirement.title} - ${spec.title}`,
+              label: 'Spec',
+              specId: spec.id,
+              projectId: spec.project_id,
+              requirementId: requirement.id,
+            }
+          : agent
+            ? { id: `agent-${agent.id}`, title: agent.name, label: 'Agent 对话', agentId: agent.id }
+            : requirement
+              ? {
+                  id: requirement.id,
+                  title: requirement.title,
+                  label: '当前需求',
+                  projectId: requirement.projectId,
+                  requirementId: requirement.id,
+                }
+              : {
+                  ...defaultScope,
+                  ...(project ? { projectId: project.id, label: '当前项目' } : {}),
+                }
+      setScope(next)
+      setCurrentProjectId(project?.id ?? '')
+      setCurrentRequirementId(
+        requirement?.id ??
+          value.requirements.find(
+            (item) => item.id === pending.currentRequirementId && item.projectId === project?.id,
+          )?.id,
+      )
+      const task = value.tasks.find((item) => item.id === pending.selectedTask)
+      setSelectedTask(task?.id ?? null)
+      if (task) {
+        setLastTaskId(task.id)
+        setExpanded(pending.expanded)
+      }
+      setNavigationReady(true)
+      pendingNavigation.current = null
+    }
+    void reinService.getData().then((value) => {
+      projectsReady.current = true
+      receive(value)
+    })
+    const unsubscribe = reinService.subscribe(receive)
+    return () => {
+      disposed = true
+      unsubscribe()
+    }
   }, [])
+  useEffect(() => {
+    if (navigationReady)
+      preferencesService.setNavigation({
+        scope,
+        currentProjectId,
+        currentRequirementId,
+        selectedTask,
+        expanded,
+        mobilePanel,
+      })
+  }, [
+    navigationReady,
+    scope,
+    currentProjectId,
+    currentRequirementId,
+    selectedTask,
+    expanded,
+    mobilePanel,
+  ])
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -111,8 +211,10 @@ export default function App() {
     }
   }
   function changeScope(next: ChatScope) {
-    if (specDirtyRef.current && !window.confirm('Spec 文档尚未保存，放弃更改并切换？')) return
-    specDirtyRef.current = false
+    if (dirtySpec.current && !window.confirm('Spec 文档尚未保存，放弃更改并切换？')) return
+    dirtySpec.current = undefined
+    pendingNavigation.current = null
+    setNavigationReady(true)
     if (next.projectId) {
       setCurrentProjectId(next.projectId)
       setCurrentRequirementId(
@@ -128,6 +230,8 @@ export default function App() {
     setMobileNav(false)
   }
   function showTask(id: string) {
+    pendingNavigation.current = null
+    setNavigationReady(true)
     taskOpenerRef.current = document.activeElement as HTMLElement
     const titleRight = splitRef.current
       ?.querySelector('.task-panel h2')
@@ -146,7 +250,11 @@ export default function App() {
   function adjustSplit(clientX: number) {
     const rect = splitRef.current?.getBoundingClientRect()
     if (!rect) return
-    const next = Math.max(360, Math.min(rect.width - 1 - 360, clientX - rect.left)) / referenceWidth
+    const next =
+      Math.max(
+        minimumPaneWidth,
+        Math.min(rect.width - 1 - minimumPaneWidth, clientX - rect.left),
+      ) / referenceWidth
     setSplit(next)
     splitValueRef.current = next
   }
@@ -178,7 +286,7 @@ export default function App() {
         {snackbar}
       </>
     )
-  if (!data)
+  if (!data || (!navigationReady && !data.projectError && !data.workflowError && !data.agentError))
     return (
       <div className="app-loading">
         <CircularProgress size={22} />
@@ -199,22 +307,18 @@ export default function App() {
       setEntityEditor({ kind: 'requirement', projectId, requirement }),
     onSpec: (requirement: Requirement) =>
       setEntityEditor({ kind: 'spec', projectId: requirement.projectId, requirement }),
-    onAgentSettings: (agent: Agent) =>
-      agent.hubManaged
-        ? setNotice('请编辑 ~/.reind/agents 下的 Agent 配置文件。')
-        : setConfiguredAgent(agent),
+    onAgentSettings: (agent: Agent) => setConfiguredAgent(agent),
     onCreateAgent: () => setConfiguredAgent('new'),
   }
   const selectedAgent = data.agents.find((agent) => agent.id === scope.agentId)
   const selectedSpec = data.workflow?.specs.find((spec) => spec.id === scope.specId)
   const mainAgent = data.agents.find((agent) => agent.id === data.workflow?.settings.main_agent)
   const sidebar = <Sidebar {...sidebarProps} />
-  return (
+  const workspace = (
     <div
       className={`app-shell ${dragging ? 'is-resizing' : ''} ${preferences.fontSize.startsWith('14') ? 'font-standard' : ''}`}
       style={
         {
-          '--terminal-size': preferences.terminal.includes('13 px') ? '13px' : '12px',
           '--task-todo': statusColors.todo,
           '--task-running': statusColors.running,
           '--task-done': statusColors.done,
@@ -261,7 +365,9 @@ export default function App() {
           className={`split-layout ${mobile ? `mobile-show-${mobilePanel}` : ''}`}
           ref={splitRef}
           style={{
-            gridTemplateColumns: mobile ? undefined : `${chatWidth}px 1px minmax(360px, 1fr)`,
+            gridTemplateColumns: mobile
+              ? undefined
+              : `${chatWidth}px 1px minmax(${minimumPaneWidth}px, 1fr)`,
           }}
         >
           {selectedSpec ? (
@@ -269,6 +375,14 @@ export default function App() {
               <AgentChat
                 key={`${selectedSpec.id}-${mainAgent.id}`}
                 spec={selectedSpec}
+                hasUnsavedSpec={() => dirtySpec.current === selectedSpec.id}
+                onActiveChange={setSpecRunning}
+                messages={data.workflow?.messages?.filter(
+                  (message) => message.spec_id === selectedSpec.id,
+                )}
+                members={data.agents}
+                workflow={data.workflow}
+                onTask={showTask}
                 title={scope.title}
                 agent={mainAgent}
                 userName={userName}
@@ -345,12 +459,14 @@ export default function App() {
             <SpecPanel
               key={selectedSpec.id}
               spec={selectedSpec}
+              agentRunning={specRunning}
               data={data}
               onTask={showTask}
               onSettings={() => setSettings(true)}
               notify={notify}
               onDirtyChange={(dirty) => {
-                specDirtyRef.current = dirty
+                if (dirty) dirtySpec.current = selectedSpec.id
+                else if (dirtySpec.current === selectedSpec.id) dirtySpec.current = undefined
               }}
             />
           ) : (
@@ -671,5 +787,15 @@ export default function App() {
       )}
       {snackbar}
     </div>
+  )
+  const specVisible = !selectedTask && !(compact && mobileNav) && (!mobile || mobilePanel === 'tasks')
+  return (
+    <NodeStatusProvider
+      data={data}
+      viewedTaskId={selectedTask}
+      viewedSpecId={specVisible ? selectedSpec?.id : undefined}
+    >
+      {workspace}
+    </NodeStatusProvider>
   )
 }

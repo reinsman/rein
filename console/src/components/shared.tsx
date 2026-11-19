@@ -1,13 +1,15 @@
-import { Avatar, IconButton, Tooltip } from '@mui/material'
-import { Blocks, Waypoints, FilePlus2 } from 'lucide-react'
+import { Avatar, Button, IconButton, Tooltip } from '@mui/material'
+import { Blocks, Waypoints, FilePlus2, Files, HandHelping, type LucideIcon } from 'lucide-react'
 import type { Agent, ExecutionState } from '../types'
-import type { ReactNode } from 'react'
+import { createElement, type ReactNode } from 'react'
+import { steerShortcut } from './chatDraft'
 
 const paths: Record<string, string> = {
   people: 'main-Group',
   plus: 'main-MaterialPlus',
   more: 'main-MaterialMore',
   doc: 'main-MaterialDoc',
+  detailDoc: 'detail-MaterialDoc1',
   spinner: 'main-MuiCircularProgressActive1',
   waiting: 'main-MaterialHelp1',
   chatWaiting: 'main-MaterialHelp',
@@ -50,32 +52,41 @@ const paths: Record<string, string> = {
   edit: 'material-edit',
   requirement: 'material-requirement',
 }
+const outlineIcons = new Map<string, LucideIcon>([
+  ['specAdd', FilePlus2],
+  ['spec', Waypoints],
+  ['project', Blocks],
+  ['artifacts', Files],
+  ['handoff', HandHelping],
+])
+
 export function Icon({
   name,
   size = 16,
   spin = false,
+  className = '',
 }: {
-  name: string
+  name: string | LucideIcon
   size?: number
   spin?: boolean
+  className?: string
 }) {
+  const Glyph = typeof name === 'string' ? outlineIcons.get(name) : name
+  const asset = typeof name === 'string' ? (paths[name] ?? paths.doc) : paths.doc
   return (
     <span
-      className={`icon ${spin ? 'spin' : ''} ${name === 'logout' ? 'logout-icon' : ''}`}
+      className={`icon ${spin ? 'spin' : ''} ${name === 'logout' ? 'logout-icon' : ''} ${className}`}
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
-      {name === 'specAdd' ? (
-        <FilePlus2 size={size} strokeWidth={1.75} />
-      ) : name === 'spec' ? (
-        <Waypoints size={size} strokeWidth={1.75} />
-      ) : name === 'project' ? (
-        <Blocks size={size} strokeWidth={1.75} color="#202632" />
+      {Glyph ? (
+        createElement(Glyph, {
+          size,
+          strokeWidth: 1.75,
+          color: name === 'project' ? '#202632' : undefined,
+        })
       ) : (
-        <img
-          src={`/icons/${name === 'detailDoc' ? 'detail-MaterialDoc1' : (paths[name] ?? paths.doc)}.svg`}
-          alt=""
-        />
+        <img src={`/icons/${asset}.svg`} alt="" />
       )}
       {name === 'logout' && (
         <span className="logout-glyph">
@@ -106,8 +117,54 @@ export function Action({
     </Tooltip>
   )
 }
-export function AgentAvatar({ agent, size = 22 }: { agent?: Agent; size?: number }) {
+export function ChatSendButton({
+  label,
+  sendMode,
+  disabled,
+  active = false,
+  canGuide = false,
+  className,
+}: {
+  label: string
+  sendMode: string
+  disabled: boolean
+  active?: boolean
+  canGuide?: boolean
+  className?: string
+}) {
+  let hint = sendMode === 'Enter 发送' ? 'Enter 发送' : `${steerShortcut} 发送`
+  if (active) {
+    hint = canGuide
+      ? `Enter 排队 · ${steerShortcut} 立即指导（Steer）`
+      : 'Enter 排队，结束后发送'
+  }
   return (
+    <Tooltip title={hint} describeChild>
+      <span style={{ display: 'inline-flex' }}>
+        <Button
+          type="submit"
+          variant="contained"
+          aria-label={label}
+          aria-description={hint}
+          disabled={disabled}
+          className={className}
+        >
+          <Icon name="send" />
+        </Button>
+      </span>
+    </Tooltip>
+  )
+}
+export function AgentAvatar({
+  agent,
+  size = 22,
+  runtime = false,
+}: {
+  agent?: Agent
+  size?: number
+  runtime?: boolean
+}) {
+  const avatar = (
     <Avatar
       src={agent ? `/providers/${agent.provider}.svg` : undefined}
       alt={agent ? `${agent.cli}头像` : undefined}
@@ -121,6 +178,16 @@ export function AgentAvatar({ agent, size = 22 }: { agent?: Agent; size?: number
     >
       {agent?.name[0] ?? 'H'}
     </Avatar>
+  )
+  return runtime ? (
+    <span className="runtime-message-avatar">
+      {avatar}
+      <span className="runtime-message-badge" role="img" aria-label="系统消息">
+        <Icon name="settings" size={10} />
+      </span>
+    </span>
+  ) : (
+    avatar
   )
 }
 export function StateIcon({ state }: { state: ExecutionState }) {

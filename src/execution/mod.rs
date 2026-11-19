@@ -37,6 +37,8 @@ pub struct LocalRun {
     pub state: String,
     pub cancel_requested: bool,
     pub native_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<std::path::PathBuf>,
     pub last_sequence: u64,
     #[serde(default)]
     pub finished_at: Option<u64>,

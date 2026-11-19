@@ -28,41 +28,7 @@ export interface Agent extends AgentConfig {
   hubManaged?: boolean
   description?: string
 }
-export interface AgentConfiguration {
-  basic: {
-    name: string
-    description: string
-    provider: Agent['provider']
-  }
-  a2a: {
-    enabled: boolean
-    endpoint: string
-    cardPath: string
-    transport: 'JSON-RPC' | 'HTTP+JSON'
-    timeout: number
-    streaming: boolean
-  }
-  local: {
-    executable: string
-    workingDirectory: string
-    model: string
-    approval: '每次确认' | '项目目录写入' | '只读'
-    timeout: number
-  }
-  skills: {
-    directories: string
-    enabled: string
-    autoDiscover: boolean
-    allowCommands: boolean
-  }
-  memory: {
-    backend: '本地文件' | 'SQLite' | 'Chroma'
-    directory: string
-    namespace: string
-    retentionDays: number
-    autoSave: boolean
-  }
-}
+export type AgentConfiguration = Omit<AgentConfig, 'skills'>
 export interface Task extends StoredTask {
   queue?: import('./services/workflow').QueueTask
   displayId?: string

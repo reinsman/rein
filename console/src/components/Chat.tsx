@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { Button, ButtonBase, InputBase, Menu, MenuItem, Paper, Tooltip } from '@mui/material'
-import type { AppData, ChatScope } from '../types'
+import { ButtonBase, InputBase, Menu, MenuItem, Paper, Tooltip } from '@mui/material'
+import type { AppData, ChatScope, Message } from '../types'
 import { reinService } from '../services/reinService'
 import { AgentChat } from './AgentChat'
-import { workflowService, type Conversation } from '../services/workflow'
+import { useChatDraft } from './chatDraft'
+import { taskMessagePreview, workflowService, type Conversation } from '../services/workflow'
+import { HandoffLinks } from './HandoffLinks'
 
-import { Action, AgentAvatar, Icon } from './shared'
+import { Action, AgentAvatar, ChatSendButton, Icon } from './shared'
 
 interface Props {
   data: AppData
@@ -49,18 +51,39 @@ export function Chat({
       disposed = true
     }
   }, [scope.requirementId, mainAgentId])
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const draft = drafts[scope.id] ?? ''
-  const setDraft = (value: string) => setDrafts((prev) => ({ ...prev, [scope.id]: value }))
+  const { draft, setDraft, sending, setSending, finishSend } = useChatDraft(`scope:${scope.id}`)
   const [memberAnchor, setMemberAnchor] = useState<HTMLElement | null>(null)
-  const messages = data.messages.filter((m) => m.scopeId === scope.id)
+  const messages: (Message & {
+    preview?: ReturnType<typeof taskMessagePreview>['preview']
+    kind?: string
+  })[] = [
+    ...data.messages.filter((m) => m.scopeId === scope.id),
+    ...(data.workflow?.messages ?? [])
+      .filter((message) => message.requirement_id === scope.requirementId)
+      .map((message) => {
+        const { content, preview } = taskMessagePreview(message, data.workflow)
+        return {
+          id: message.id,
+          scopeId: scope.id,
+          authorId: message.agent_id,
+          time: new Date(message.created_at).toLocaleTimeString('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          content: content.replaceAll('@用户', `@${userName}`),
+          preview,
+          kind: message.kind,
+          taskIds: [message.task_id],
+          execution: message.kind === 'waiting' ? ('waiting' as const) : undefined,
+        }
+      }),
+  ]
   const selectedAgent = data.agents.find((agent) => agent.id === scope.agentId)
   const canChat = !!selectedAgent || !!scope.requirementId
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [attachment, setAttachment] = useState('')
-  const [sending, setSending] = useState(false)
   function mention(name: string) {
     const input = inputRef.current
     const start = input?.selectionStart ?? draft.length
@@ -87,7 +110,7 @@ export function Chat({
         scope.id,
         `${draft}${attachment ? `\n[附件：${attachment}，仅本地演示]` : ''}`,
       )
-      setDraft('')
+      finishSend()
       setAttachment('')
     } catch (error) {
       notify(error instanceof Error ? error.message : '发送失败，请重试。')
@@ -112,6 +135,12 @@ export function Chat({
         key={`${conversation.id}-${mainAgent.id}`}
         conversation={conversation}
         title={scope.title}
+        messages={data.workflow?.messages?.filter(
+          (message) => message.requirement_id === scope.requirementId,
+        )}
+        members={data.agents}
+        workflow={data.workflow}
+        onTask={onTask}
         agent={mainAgent}
         userName={userName}
         sendMode={sendMode}
@@ -185,8 +214,9 @@ export function Chat({
             <article
               className={`message ${own ? 'own' : 'agent-message'} ${message.taskIds ? 'with-tasks' : ''}`}
               key={message.id}
+              data-task-message={message.kind}
             >
-              {!own && <AgentAvatar agent={agent} />}
+              {!own && <AgentAvatar agent={agent} runtime={message.kind !== undefined} />}
               <div className="message-content">
                 <div className="message-author">
                   {own ? (
@@ -233,6 +263,7 @@ export function Chat({
                   </Paper>
                   {own && <AgentAvatar />}
                 </div>
+                {message.preview && <HandoffLinks {...message.preview} />}
                 {message.taskIds && (
                   <Paper variant="outlined" className="message-task-table">
                     {message.taskIds.map((id) => {
@@ -305,15 +336,12 @@ export function Chat({
               onClick={() => fileRef.current?.click()}
             />
             <span className="spacer" />
-            <Button
-              type="submit"
-              variant="contained"
-              aria-label="发送消息按钮"
+            <ChatSendButton
+              label="发送消息按钮"
+              sendMode={sendMode}
               disabled={!canChat || sending || (!draft.trim() && !attachment)}
               className="send-button"
-            >
-              <Icon name="send" />
-            </Button>
+            />
           </div>
           <input
             ref={fileRef}

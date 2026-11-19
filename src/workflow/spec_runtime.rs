@@ -8,25 +8,126 @@ impl Workflow {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(400));
             loop {
-                tokio::select! {_=stop.cancelled()=>break,_=tick.tick()=>if let Err(error)=runtime.spec_tick().await {eprintln!("reind: spec runtime: {error:#}");}}
+                tokio::select! {_=stop.cancelled()=>break,_=tick.tick()=>{
+                    if let Err(error)=runtime.spec_tick().await {eprintln!("reind: spec runtime: {error:#}");}
+                    if let Err(error)=runtime.update_task_documents().await {eprintln!("reind: task document update: {error:#}");}
+                }}
             }
         })
     }
     async fn spec_tick(&self) -> Result<()> {
-        self.edit(|state| {
-            for index in 0..state.specs.len() {
-                let spec = state.specs[index].clone();
-                if spec.paused {
+        let mut guard = self.state.lock().await;
+        let mut state = guard.clone();
+        for index in 0..state.specs.len() {
+            let spec = state.specs[index].clone();
+            let latest: Option<(String, String)> = sqlx::query_as("SELECT snapshot,prompt FROM local_runs WHERE session_id=? ORDER BY rowid DESC LIMIT 1")
+                .bind(&spec.session_id).fetch_optional(&self.local.store.pool).await?;
+            let run = latest
+                .as_ref()
+                .map(|(snapshot, _)| serde_json::from_str::<crate::execution::LocalRun>(snapshot))
+                .transpose()?;
+            let completed = run.as_ref().is_some_and(|run| run.state == "completed");
+            if completed {
+                if state.specs[index].document_run_id.as_deref()
+                    != run.as_ref().map(|run| run.run_id.as_str())
+                {
+                    let message = latest
+                        .as_ref()
+                        .and_then(|(_, prompt)| prompt.rsplit_once("\nREIN_SPEC_USER_MESSAGE:\n"))
+                        .and_then(|(_, message)| {
+                            serde_json::from_str::<serde_json::Value>(message).ok()
+                        });
+                    if let Some(message) = message
+                        && let Some(name) = message["keep_document"].as_str()
+                    {
+                        let content = read_text(&self.spec_dir(&spec).join(name))?;
+                        if message["keep_revision"].as_str()
+                            != Some(markdown::artifact_revision(name, &content).as_str())
+                        {
+                            state.specs[index].error = Some(format!(
+                                "{name} 未按保留要求保持原样，请让主 Agent 修正后继续。"
+                            ));
+                            continue;
+                        }
+                    }
+                    if state.specs[index].document_revision.is_some() {
+                        state.specs[index].document_revision = Some(self.document_revision(&spec)?);
+                    }
+                }
+                if let Err(error) = self.sync_document_approvals(&mut state.specs[index]) {
+                    state.specs[index].error = Some(format!(".spec-state.json: {error:#}"));
                     continue;
                 }
-                if let Err(error) = self.advance_spec(state, &spec) {
-                    state.specs[index].paused = true;
-                    state.specs[index].error = Some(format!("{error:#}"));
+                state.specs[index].document_run_id = run.as_ref().map(|run| run.run_id.clone());
+                if !matches!(
+                    spec.phase,
+                    Phase::Requirements | Phase::Design | Phase::Tasks
+                ) {
+                    if let Err(error) = self.sync_spec_state(&mut state, &spec.id) {
+                        state.specs[index].error = Some(format!(".spec-state.json: {error:#}"));
+                        continue;
+                    }
                 }
             }
-            Ok(())
-        })
-        .await
+            if matches!(
+                spec.phase,
+                Phase::Requirements | Phase::Design | Phase::Tasks
+            ) {
+                if let Some(run) = &run {
+                    if matches!(run.state.as_str(), "failed" | "cancelled") {
+                        state.specs[index].error = Some(if run.state == "cancelled" {
+                            "主 Agent 执行已取消，当前阶段文档可能尚未保存。可继续当前阶段，重新生成后再审阅。".into()
+                        } else {
+                            format!(
+                                "主 Agent 执行失败：{}。可继续当前阶段。",
+                                run.error.as_deref().unwrap_or("执行异常结束")
+                            )
+                        });
+                        continue;
+                    }
+                    if state.specs[index]
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with("主 Agent 执行"))
+                    {
+                        state.specs[index].error = None;
+                    }
+                }
+                if run.is_none_or(|run| run.state == "completed") {
+                    if let Err(error) = self.sync_spec_state(&mut state, &spec.id) {
+                        state.specs[index].error = Some(format!(".spec-state.json: {error:#}"));
+                        continue;
+                    }
+                    if state.specs[index]
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with(".spec-state.json:"))
+                    {
+                        state.specs[index].error = None;
+                    }
+                }
+            } else if let Some(run) = &run
+                && matches!(run.state.as_str(), "failed" | "cancelled")
+            {
+                state.specs[index].error = Some(format!(
+                    "主 Agent 执行未完成：{}。请重试文档审阅。",
+                    run.error.as_deref().unwrap_or(&run.state)
+                ));
+            }
+            let spec = state.specs[index].clone();
+            if spec.paused {
+                continue;
+            }
+            if let Err(error) = self.advance_spec(&mut state, &spec) {
+                state.specs[index].paused = true;
+                state.specs[index].error = Some(format!("{error:#}"));
+            }
+        }
+        if serde_json::to_vec(&*guard)? != serde_json::to_vec(&state)? {
+            self.commit(&state).await?;
+            *guard = state;
+        }
+        Ok(())
     }
     fn advance_spec(&self, state: &mut Snapshot, spec: &Spec) -> Result<()> {
         let spec_index = state.specs.iter().position(|s| s.id == spec.id).unwrap();
@@ -46,16 +147,8 @@ impl Workflow {
                     .iter()
                     .find(|p| !coding.iter().any(|t| t.plan_id.as_ref() == Some(&p.id)))
                 {
-                    let mut task = QueueTask::new(
-                        spec.requirement_id.clone(),
-                        Some(spec),
-                        plan.title.clone(),
-                        plan.description.clone(),
-                        Role::Coding,
-                        spec.directory.clone(),
-                    );
-                    task.plan_id = Some(plan.id.clone());
-                    state.tasks.push(task);
+                    let plan_id = plan.id.clone();
+                    Self::enqueue_spec_task(state, spec, &plan_id)?;
                 } else {
                     state.specs[spec_index].phase = Phase::ReadyVerification;
                 }

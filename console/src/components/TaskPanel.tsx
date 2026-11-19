@@ -8,6 +8,7 @@ import { TaskDependencies } from './TaskDependencies'
 import { blockedReason, taskProgress } from '../services/sdd'
 import { TaskTypeBadge } from './TaskTypeBadge'
 import { HandoffLinks } from './HandoffLinks'
+import { NodeStatus } from './NodeStatus'
 import { workflowService } from '../services/workflow'
 
 interface Props {
@@ -182,7 +183,10 @@ export function TaskPanel({
                               SDD
                             </span>
                           )}
-                          <span className="task-card-number">{task.displayId ?? task.id}</span>
+                          <span className="task-card-number">
+                            {task.displayId ?? task.id}
+                            <NodeStatus taskId={task.id} source />
+                          </span>
                           {task.execution === 'waiting' && (
                             <span className="needs-reply-badge">需你回复</span>
                           )}
@@ -253,13 +257,13 @@ export function TaskPanel({
                                     void workflowService
                                       .taskAction(
                                         task.id,
-                                        task.status === 'running' ? 'stop' : 'start',
+                                        taskHasActiveAgent(task) ? 'stop' : 'start',
                                       )
                                       .then(() => reinService.refreshWorkflow())
                                       .catch((error) => notify(String(error)))
                                   }
                                 >
-                                  {task.status === 'running'
+                                  {taskHasActiveAgent(task)
                                     ? '停止任务'
                                     : task.queue.paused || task.queue.error
                                       ? '重试任务'
@@ -340,6 +344,22 @@ export function TaskPanel({
             移至{statusLabels[status]}
           </MenuItem>
         ))}
+        {taskMenu?.task.queue && (
+          <MenuItem
+            disabled={taskHasActiveAgent(
+              tasks.find((task) => task.id === taskMenu.task.id) ?? taskMenu.task,
+            )}
+            onClick={() => {
+              void reinService
+                .deleteTask(taskMenu.task.id)
+                .then(() => notify('任务已删除，Spec 文档和执行历史已保留。'))
+                .catch((error) => notify(error instanceof Error ? error.message : '删除失败'))
+              setTaskMenu(null)
+            }}
+          >
+            删除任务
+          </MenuItem>
+        )}
         <MenuItem
           onClick={() => {
             if (taskMenu) onTask(taskMenu.task.id)

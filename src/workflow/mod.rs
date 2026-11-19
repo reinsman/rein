@@ -1,12 +1,16 @@
 //! Durable Spec state and a shared Todo queue. Agent execution remains in LocalRuntime.
+mod markdown;
+mod spec_chat;
+pub use spec_chat::PlanningOptions;
 mod spec_runtime;
+mod task_messages;
 mod task_runtime;
 
 use crate::local::{LocalRuntime, TaskStatus};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
@@ -42,6 +46,13 @@ pub enum Phase {
     ReadyComplete,
     Complete,
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecKind {
+    #[default]
+    Feature,
+    Bugfix,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Criterion {
@@ -71,6 +82,8 @@ pub struct Spec {
     pub requirement_id: String,
     pub title: String,
     pub description: String,
+    #[serde(default)]
+    pub kind: SpecKind,
     pub directory: String,
     pub phase: Phase,
     pub paused: bool,
@@ -78,6 +91,12 @@ pub struct Spec {
     pub session_id: String,
     pub agent_id: Option<String>,
     pub plan: Plan,
+    #[serde(default)]
+    pub document_revision: Option<String>,
+    #[serde(default)]
+    pub document_approvals: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub document_run_id: Option<String>,
     pub error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +184,25 @@ pub struct Snapshot {
     pub tasks: Vec<QueueTask>,
     #[serde(default)]
     pub conversations: Vec<Conversation>,
+    #[serde(default)]
+    pub messages: Vec<TaskMessage>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskMessage {
+    pub id: String,
+    pub event_key: String,
+    pub requirement_id: String,
+    pub spec_id: Option<String>,
+    pub task_id: String,
+    pub run_id: Option<String>,
+    pub agent_id: String,
+    pub kind: String,
+    pub content: String,
+    pub created_at: u64,
+    pub update_request_id: Option<String>,
+    pub handoff: Option<String>,
+    pub update_done: bool,
+    pub update_error: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -255,6 +293,7 @@ impl Workflow {
         prompt: String,
         request_id: String,
         origin: &str,
+        session_id: Option<&str>,
     ) -> Result<crate::execution::LocalRun> {
         bounded(&prompt, 32 * 1024)?;
         ensure!(
@@ -262,6 +301,10 @@ impl Workflow {
             "request_id must be a UUID"
         );
         let conversation = self.conversation(id).await?;
+        ensure!(
+            session_id.is_none_or(|session| session == conversation.session_id),
+            "需求会话已切换，请检查排队消息"
+        );
         let (project, requirement) = self.requirement(id)?;
         let directory = project
             .preferred_directory
@@ -346,10 +389,38 @@ impl Workflow {
             fs::create_dir_all(&dir)?;
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
         }
-        Ok(Self {
+        let workflow = Self {
             local,
             state: Arc::new(Mutex::new(state)),
-        })
+        };
+        workflow
+            .edit(|state| {
+                for spec in &mut state.specs {
+                    workflow.initialize_spec_state(spec)?;
+                    if spec.document_approvals.is_none() {
+                        spec.document_approvals = Some(HashMap::new());
+                        let confirmed = match spec.phase {
+                            Phase::Requirements => 0,
+                            Phase::Design => 1,
+                            Phase::Tasks => 2,
+                            _ => 3,
+                        };
+                        for name in ["requirements.md", "design.md", "tasks.md"]
+                            .into_iter()
+                            .take(confirmed)
+                        {
+                            if let Ok(content) = read_text(&workflow.spec_dir(spec).join(name))
+                                && !content.trim().is_empty()
+                            {
+                                workflow.approve_document(spec, name, &content);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(workflow)
     }
     async fn commit(&self, state: &Snapshot) -> Result<()> {
         sqlx::query("INSERT INTO workflow_state(id,snapshot) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot").bind(serde_json::to_string(state)?).execute(&self.local.store.pool).await?;
@@ -375,12 +446,14 @@ impl Workflow {
             settings.coding_agents.len() <= 64 && settings.review_agents.len() <= 64,
             "too many role assignments"
         );
-        let mut assigned = HashSet::new();
-        for name in settings.coding_agents.iter().chain(&settings.review_agents) {
-            ensure!(
-                names.contains(name.as_str()) && assigned.insert(name),
-                "unknown or duplicate agent; Coding and Review roles must be separate"
-            );
+        for role in [&settings.coding_agents, &settings.review_agents] {
+            let mut assigned = HashSet::new();
+            for name in role {
+                ensure!(
+                    names.contains(name.as_str()) && assigned.insert(name),
+                    "unknown or duplicate agent in role"
+                );
+            }
         }
         ensure!(
             settings
@@ -411,6 +484,7 @@ impl Workflow {
         requirement_id: String,
         title: String,
         description: String,
+        kind: SpecKind,
     ) -> Result<Spec> {
         bounded(&title, 240)?;
         ensure!(description.len() <= 12000, "description too long");
@@ -426,6 +500,7 @@ impl Workflow {
             requirement_id,
             title: title.trim().into(),
             description,
+            kind,
             directory,
             phase: Phase::Requirements,
             paused: false,
@@ -433,6 +508,9 @@ impl Workflow {
             session_id: Uuid::new_v4().to_string(),
             agent_id: None,
             plan: Plan::default(),
+            document_revision: None,
+            document_approvals: Some(HashMap::new()),
+            document_run_id: None,
             error: None,
         };
         self.edit(|state| {
@@ -449,7 +527,7 @@ impl Workflow {
             for file in ["requirements.md", "design.md", "tasks.md"] {
                 write_text(&dir.join(file), "")?;
             }
-            crate::agents::write_json(&dir.join("plan.json"), &spec.plan)?;
+            self.initialize_spec_state(&spec)?;
             state.specs.push(spec.clone());
             Ok(spec)
         })
@@ -469,9 +547,6 @@ impl Workflow {
         let state = self.state.lock().await;
         if let Some(spec) = state.specs.iter().find(|s| s.id == id) {
             let content = read_text(&self.spec_dir(spec).join(allowed_file(name)?))?;
-            if name == "plan.json" {
-                serde_json::from_str::<Plan>(&content)?.validate()?;
-            }
             return Ok(content);
         }
         let task = state
@@ -493,163 +568,271 @@ impl Workflow {
         previous: Option<&str>,
     ) -> Result<()> {
         ensure!(
-            matches!(
-                name,
-                "requirements.md" | "design.md" | "tasks.md" | "plan.json"
-            ),
+            matches!(name, "requirements.md" | "design.md" | "tasks.md"),
             "file is read-only"
         );
         ensure!(content.len() <= 128 * 1024, "document too large");
+        self.edit(|state| {
+            let spec = state
+                .specs
+                .iter_mut()
+                .find(|s| s.id == id)
+                .context("Spec not found")?;
+            let path = self.spec_dir(spec).join(name);
+            if let Some(previous) = previous {
+                let current = read_text(&path)?;
+                ensure!(
+                    current == previous || current == content,
+                    "file changed by another editor or Agent; reload before saving"
+                );
+            }
+            write_text(&path, content)?;
+            if spec.document_revision.is_some() {
+                spec.document_revision = Some(self.document_revision(spec)?);
+            }
+            Ok(())
+        })
+        .await
+    }
+    fn approve_document(&self, spec: &mut Spec, name: &str, content: &str) {
+        spec.document_approvals
+            .get_or_insert_with(HashMap::new)
+            .insert(name.into(), markdown::artifact_revision(name, content));
+    }
+    pub async fn document_confirmed(&self, id: &str, name: &str, content: &str) -> bool {
+        let spec = self
+            .state
+            .lock()
+            .await
+            .specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .cloned();
+        let Some(mut spec) = spec else { return false };
+        // Planning approvals can be published before the Agent finishes drafting the next document.
+        let _ = self.sync_document_approvals(&mut spec);
+        spec.document_approvals
+            .as_ref()
+            .and_then(|approvals| approvals.get(name))
+            .is_some_and(|approved| {
+                !content.trim().is_empty()
+                    && *approved == markdown::artifact_revision(name, content)
+            })
+    }
+    fn load_plan(&self, spec: &Spec) -> Result<Plan> {
+        Ok(self.load_documents(spec)?.0)
+    }
+    fn load_documents(&self, spec: &Spec) -> Result<(Plan, String)> {
+        let requirements = read_text(&self.spec_dir(spec).join("requirements.md"))?;
+        let tasks = read_text(&self.spec_dir(spec).join("tasks.md"))?;
+        Ok((
+            markdown::plan(&requirements, &tasks)?,
+            markdown::revision(&requirements, &tasks),
+        ))
+    }
+    fn document_revision(&self, spec: &Spec) -> Result<String> {
+        Ok(markdown::revision(
+            &read_text(&self.spec_dir(spec).join("requirements.md"))?,
+            &read_text(&self.spec_dir(spec).join("tasks.md"))?,
+        ))
+    }
+    pub async fn document_plan(&self, id: &str) -> Result<Plan> {
         let state = self.state.lock().await;
         let spec = state
             .specs
             .iter()
-            .find(|s| s.id == id)
+            .find(|spec| spec.id == id)
             .context("Spec not found")?;
-        ensure!(
-            matches!(
-                spec.phase,
-                Phase::Requirements | Phase::Design | Phase::Tasks
-            ),
-            "reopen the planning stage before editing"
-        );
-        if name == "plan.json" {
-            let plan = serde_json::from_str::<Plan>(content)?;
-            plan.validate()?;
-            ensure!(
-                spec.phase == Phase::Requirements
-                    || serde_json::to_string(&plan.criteria)?
-                        == serde_json::to_string(&spec.plan.criteria)?,
-                "confirmed acceptance criteria cannot be changed during design or implementation"
-            );
+        if matches!(
+            spec.phase,
+            Phase::Requirements | Phase::Design | Phase::Tasks
+        ) {
+            self.load_plan(spec)
+        } else {
+            Ok(spec.plan.clone())
         }
-        ensure!(
-            name != "requirements.md" || spec.phase == Phase::Requirements,
-            "requirements were already confirmed"
-        );
-        ensure!(
-            name != "design.md" || spec.phase != Phase::Tasks,
-            "design was already confirmed"
-        );
-        let path = self.spec_dir(spec).join(name);
-        if let Some(previous) = previous {
-            let current = read_text(&path)?;
-            ensure!(
-                current == previous || current == content,
-                "file changed by another editor or Agent; reload before saving"
-            );
+    }
+    fn enqueue_spec_task(state: &mut Snapshot, spec: &Spec, plan_id: &str) -> Result<QueueTask> {
+        if let Some(task) = state.tasks.iter().find(|task| {
+            task.spec_id.as_deref() == Some(&spec.id)
+                && task.role == Role::Coding
+                && task.plan_id.as_deref() == Some(plan_id)
+        }) {
+            return Ok(task.clone());
         }
-        write_text(&path, content)
+        let item = spec
+            .plan
+            .tasks
+            .iter()
+            .find(|task| task.id == plan_id)
+            .context("Spec checklist item not found")?;
+        let mut task = QueueTask::new(
+            spec.requirement_id.clone(),
+            Some(spec),
+            item.title.clone(),
+            item.description.clone(),
+            Role::Coding,
+            spec.directory.clone(),
+        );
+        task.plan_id = Some(item.id.clone());
+        state.tasks.push(task.clone());
+        Ok(task)
     }
-    fn load_plan(&self, spec: &Spec) -> Result<Plan> {
-        let plan: Plan = serde_json::from_str(&read_text(&self.spec_dir(spec).join("plan.json"))?)?;
-        plan.validate()?;
-        Ok(plan)
-    }
-    pub async fn spec_action(&self, id: &str, action: &str) -> Result<()> {
+    pub async fn submit_spec_task(&self, id: &str, plan_id: &str) -> Result<QueueTask> {
         self.edit(|state| {
-            let index = state
+            let spec = state
                 .specs
                 .iter()
-                .position(|s| s.id == id)
-                .context("Spec not found")?;
-            let spec = &mut state.specs[index];
-            match action {
-                "approve_requirements" => {
-                    ensure!(
-                        spec.phase == Phase::Requirements,
-                        "not in requirements stage"
-                    );
-                    bounded(
-                        &read_text(&self.spec_dir(spec).join("requirements.md"))?,
-                        128 * 1024,
-                    )?;
-                    let plan = self.load_plan(spec)?;
-                    ensure!(
-                        !plan.criteria.is_empty(),
-                        "add acceptance criteria to plan.json first"
-                    );
-                    spec.plan = plan;
-                    spec.phase = Phase::Design;
-                }
-                "approve_design" => {
-                    ensure!(spec.phase == Phase::Design, "not in design stage");
-                    bounded(
-                        &read_text(&self.spec_dir(spec).join("design.md"))?,
-                        128 * 1024,
-                    )?;
-                    spec.phase = Phase::Tasks;
-                }
-                "build" => {
-                    ensure!(
-                        spec.phase == Phase::Tasks,
-                        "construction already started; use resume"
-                    );
-                    let plan = self.load_plan(spec)?;
-                    ensure!(
-                        !plan.tasks.is_empty() && !plan.criteria.is_empty(),
-                        "plan requires tasks and acceptance criteria"
-                    );
-                    ensure!(serde_json::to_string(&plan.criteria)?==serde_json::to_string(&spec.plan.criteria)?,"acceptance criteria changed after confirmation; review the requirements again");
-                    bounded(
-                        &read_text(&self.spec_dir(spec).join("tasks.md"))?,
-                        128 * 1024,
-                    )?;
-                    spec.plan = plan;
-                    spec.phase = Phase::Building;
-                    spec.paused = false;
-                }
-                "submit_verification" => {
-                    ensure!(
-                        spec.phase == Phase::ReadyVerification,
-                        "finish all coding tasks first"
-                    );
-                    spec.round += 1;
-                    spec.phase = Phase::Verifying;
-                    spec.paused = false;
-                }
-                "complete" => {
-                    ensure!(
-                        spec.phase == Phase::ReadyComplete,
-                        "complete all acceptance checks first"
-                    );
-                    spec.phase = Phase::Complete;
-                }
-                "pause" => {
-                    spec.paused = true;
-                    for t in state.tasks.iter_mut().filter(|t| {
-                        t.spec_id.as_deref() == Some(id) && t.status != TaskStatus::Done
-                    }) {
-                        t.paused = true;
-                    }
-                }
-                "resume" => {
-                    spec.paused = false;
-                    spec.error = None;
-                    for t in state.tasks.iter_mut().filter(|t| {
-                        t.spec_id.as_deref() == Some(id)
-                            && t.status != TaskStatus::Done
-                            && t.error.is_none()
-                    }) {
-                        t.paused = false;
-                    }
-                }
-                "reopen" => {
-                    ensure!(
-                        !state
-                            .tasks
-                            .iter()
-                            .any(|t| t.spec_id.as_deref() == Some(id)),
-                        "submitted Specs use the repair flow; only unsubmitted documents can reopen"
-                    );
-                    spec.phase = Phase::Requirements;
-                    spec.paused = true;
-                }
-                _ => bail!("unknown Spec action"),
-            }
-            Ok(())
+                .find(|spec| spec.id == id)
+                .context("Spec not found")?
+                .clone();
+            ensure!(
+                matches!(
+                    spec.phase,
+                    Phase::Building | Phase::Repairing | Phase::ReadyVerification
+                ),
+                "confirm the complete task plan before submitting a checklist item"
+            );
+            Self::enqueue_spec_task(state, &spec, plan_id)
         })
-        .await?;
+        .await
+    }
+    fn transition_spec(&self, state: &mut Snapshot, id: &str, action: &str) -> Result<()> {
+        let index = state
+            .specs
+            .iter()
+            .position(|s| s.id == id)
+            .context("Spec not found")?;
+        let spec = &mut state.specs[index];
+        match action {
+            "approve_requirements" => {
+                ensure!(
+                    spec.phase == Phase::Requirements,
+                    "not in requirements stage"
+                );
+                let requirements = read_text(&self.spec_dir(spec).join("requirements.md"))?;
+                bounded(&requirements, 128 * 1024)?;
+                let plan = Plan {
+                    criteria: markdown::requirements(&requirements)?,
+                    tasks: vec![],
+                };
+                plan.validate()?;
+                ensure!(
+                    !plan.criteria.is_empty(),
+                    "add Acceptance Criteria to requirements.md first"
+                );
+                spec.plan = plan;
+                self.approve_document(spec, "requirements.md", &requirements);
+                spec.phase = Phase::Design;
+            }
+            "approve_design" => {
+                ensure!(spec.phase == Phase::Design, "not in design stage");
+                let design = read_text(&self.spec_dir(spec).join("design.md"))?;
+                bounded(&design, 128 * 1024)?;
+                self.approve_document(spec, "design.md", &design);
+                spec.phase = Phase::Tasks;
+            }
+            "build" => {
+                ensure!(
+                    spec.phase == Phase::Tasks,
+                    "construction already started; use resume"
+                );
+                let (plan, revision) = self.load_documents(spec)?;
+                ensure!(
+                    !plan.tasks.is_empty() && !plan.criteria.is_empty(),
+                    "plan requires tasks and acceptance criteria"
+                );
+                bounded(
+                    &read_text(&self.spec_dir(spec).join("tasks.md"))?,
+                    128 * 1024,
+                )?;
+                spec.plan = plan;
+                spec.document_revision = Some(revision);
+                let tasks = read_text(&self.spec_dir(spec).join("tasks.md"))?;
+                self.approve_document(spec, "tasks.md", &tasks);
+                spec.phase = Phase::Building;
+                spec.paused = false;
+            }
+            "submit_verification" => {
+                ensure!(
+                    spec.phase == Phase::ReadyVerification,
+                    "finish all coding tasks first"
+                );
+                spec.round += 1;
+                spec.phase = Phase::Verifying;
+                spec.paused = false;
+            }
+            "complete" => {
+                ensure!(
+                    spec.phase == Phase::ReadyComplete,
+                    "complete all acceptance checks first"
+                );
+                spec.phase = Phase::Complete;
+            }
+            "pause" => {
+                spec.paused = true;
+                for t in state
+                    .tasks
+                    .iter_mut()
+                    .filter(|t| t.spec_id.as_deref() == Some(id) && t.status != TaskStatus::Done)
+                {
+                    t.paused = true;
+                }
+            }
+            "resume" => {
+                spec.paused = false;
+                spec.error = None;
+                for t in state.tasks.iter_mut().filter(|t| {
+                    t.spec_id.as_deref() == Some(id)
+                        && t.status != TaskStatus::Done
+                        && t.error.is_none()
+                }) {
+                    t.paused = false;
+                }
+            }
+            "reopen" => {
+                ensure!(
+                    !state.tasks.iter().any(|t| t.spec_id.as_deref() == Some(id)),
+                    "submitted Specs use the repair flow; only unsubmitted documents can reopen"
+                );
+                spec.phase = Phase::Requirements;
+                spec.paused = true;
+            }
+            _ => bail!("unknown Spec action"),
+        }
+        Ok(())
+    }
+    pub async fn spec_action(&self, id: &str, action: &str) -> Result<()> {
+        if action == "reopen" {
+            self.chat(
+                id,
+                "请重新打开需求，修订后等待我重新审阅。".into(),
+                Uuid::new_v4().to_string(),
+            )
+            .await?;
+            return Ok(());
+        }
+        let planning = match action {
+            "approve_requirements" => Some((Phase::Requirements, "确认需求，继续设计")),
+            "approve_design" => Some((Phase::Design, "确认设计，拆分任务")),
+            "build" => Some((Phase::Tasks, "确认任务，开始构建")),
+            _ => None,
+        };
+        if let Some((phase, message)) = planning {
+            let state = self.snapshot().await;
+            ensure!(
+                state
+                    .specs
+                    .iter()
+                    .any(|spec| spec.id == id && spec.phase == phase),
+                "not in the requested planning phase"
+            );
+            self.chat(id, message.into(), Uuid::new_v4().to_string())
+                .await?;
+            return Ok(());
+        }
+        self.edit(|state| self.transition_spec(state, id, action))
+            .await?;
         if action == "pause" {
             self.cancel_matching(Some(id), None).await?;
         }
@@ -682,6 +865,47 @@ impl Workflow {
             Ok(task)
         })
         .await
+    }
+    pub async fn delete_task(&self, id: &str) -> Result<()> {
+        // Hold the dispatch lock until deletion is durable, so an idle task cannot start midway.
+        let mut guard = self.state.lock().await;
+        let mut next = guard.clone();
+        let index = next
+            .tasks
+            .iter()
+            .position(|task| task.id == id)
+            .context("task not found")?;
+        let task = &next.tasks[index];
+        let runs: Vec<String> =
+            sqlx::query_scalar("SELECT snapshot FROM local_runs WHERE id IN (?,?) OR request_id=? OR (session_id=(SELECT session_id FROM local_runs WHERE id=?) AND json_extract(snapshot,'$.state') NOT IN ('completed','failed','cancelled'))")
+                .bind(&task.run_id)
+                .bind(&task.last_run_id)
+                .bind(&task.request_id)
+                .bind(&task.last_run_id)
+                .fetch_all(&self.local.store.pool)
+                .await?;
+        for snapshot in runs {
+            let run: crate::execution::LocalRun = serde_json::from_str(&snapshot)?;
+            ensure!(
+                crate::local::terminal(&run.state),
+                "任务或会话仍在运行，请停止后再删除。"
+            );
+        }
+        let task = next.tasks.remove(index);
+        if let Some(spec) = next
+            .specs
+            .iter_mut()
+            .find(|spec| Some(&spec.id) == task.spec_id.as_ref())
+        {
+            spec.paused = true;
+            spec.error = Some(
+                "Todo 任务已删除，自动推进已暂停；可从任务计划重新提交，或继续流程重新入队。"
+                    .into(),
+            );
+        }
+        self.commit(&next).await?;
+        *guard = next;
+        Ok(())
     }
     pub async fn task_action(
         &self,
@@ -776,64 +1000,11 @@ impl Workflow {
         }
         Ok(())
     }
-    pub async fn chat(
-        &self,
-        id: &str,
-        prompt: String,
-        request_id: String,
-    ) -> Result<crate::execution::LocalRun> {
-        bounded(&prompt, 32 * 1024)?;
-        let (spec, agent) = self
-            .edit(|state| {
-                let agent = state
-                    .settings
-                    .main_agent
-                    .clone()
-                    .context("configure a main Agent in system settings first")?;
-                let spec = state
-                    .specs
-                    .iter_mut()
-                    .find(|s| s.id == id)
-                    .context("Spec not found")?;
-                if spec.agent_id.as_ref() != Some(&agent) {
-                    if spec.agent_id.is_some() {
-                        spec.session_id = Uuid::new_v4().to_string();
-                    }
-                    spec.agent_id = Some(agent.clone());
-                }
-                Ok((spec.clone(), agent))
-            })
-            .await?;
-        let (project, requirement) = self.requirement(&spec.requirement_id)?;
-        let directory = project
-            .preferred_directory
-            .or(project.directories.first().cloned())
-            .context("configure a project working directory first")?;
-        let full = format!(
-            "Use the installed rein-spec skill. You are the main Spec Agent. Work on ONE phase at a time and wait for explicit user approval before advancing. Current phase: {:?}.\nRequirement: {}\nSpec: {}\nDescription: {}\nWORKING_DIR: {}\nSPEC_DIR: {}\nWrite requirements.md, design.md and tasks.md only in SPEC_DIR; never put Spec documents into the source checkout. Keep the documents self-contained. Requirements must include testable acceptance criteria. Design constrains implementation. Tasks must be an ordered, non-DAG list. Also maintain plan.json with this exact structure: {{\"criteria\":[{{\"id\":\"AC-01\",\"text\":\"expected behaviour\"}}],\"tasks\":[{{\"id\":\"T-01\",\"title\":\"task\",\"description\":\"implementation scope\",\"acceptance_ids\":[\"AC-01\"]}}]}}. Keep IDs stable; no execution or status changes by the Spec Agent. The daemon submits and dispatches tasks. Do not claim success without evidence.\nUSER MESSAGE:\n{}",
-            spec.phase,
-            requirement.title,
-            spec.title,
-            spec.description,
-            directory.display(),
-            self.spec_dir(&spec).display(),
-            prompt
-        );
-        self.local
-            .start_in_directory(
-                agent,
-                Some(spec.session_id),
-                full,
-                request_id,
-                Some(directory),
-            )
-            .await
-    }
 }
 fn allowed_file(name: &str) -> Result<&str> {
     ensure!(
         name.len() <= 160
-            && !name.starts_with('.')
+            && (!name.starts_with('.') || name == ".spec-state.json")
             && name
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c)),
@@ -882,4 +1053,100 @@ fn artifact_parent(path: &std::path::Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deletion_checks_actual_run_even_with_stale_task_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::store::LocalStore::open(directory.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        let local = LocalRuntime::new(directory.path().to_path_buf(), store)
+            .await
+            .unwrap();
+        let workflow = Workflow::new(local).await.unwrap();
+        for state in [
+            "running",
+            "waiting_input",
+            "waiting_approval",
+            "failed",
+            "cancelled",
+            "completed",
+        ] {
+            let mut task = QueueTask::new(
+                "requirement".into(),
+                None,
+                "test".into(),
+                "".into(),
+                Role::Coding,
+                "test".into(),
+            );
+            // A paused flag or stale board column does not prove the process stopped.
+            task.status = TaskStatus::Running;
+            task.paused = true;
+            task.request_id = Some(Uuid::new_v4().to_string());
+            let run = crate::execution::LocalRun {
+                run_id: Uuid::new_v4().to_string(),
+                attempt_id: "attempt".into(),
+                session_id: "session".into(),
+                provider: "pi".into(),
+                state: state.into(),
+                cancel_requested: true,
+                native_session_id: None,
+                working_directory: None,
+                last_sequence: 0,
+                finished_at: None,
+                error: None,
+            };
+            sqlx::query("INSERT INTO local_runs(id,request_id,agent_id,session_id,prompt,snapshot) VALUES(?,?,'agent','session','',?)")
+                .bind(&run.run_id).bind(&task.request_id).bind(serde_json::to_string(&run).unwrap())
+                .execute(&workflow.local.store.pool).await.unwrap();
+            workflow
+                .edit(|snapshot| {
+                    snapshot.tasks.push(task.clone());
+                    if crate::local::terminal(state) {
+                        let mut message =
+                            TaskMessage::new(&task, "completed", "test", "历史记录".into());
+                        message.update_request_id = Some(Uuid::new_v4().to_string());
+                        snapshot.messages.push(message);
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            let result = workflow.delete_task(&task.id).await;
+            assert_eq!(result.is_ok(), crate::local::terminal(state), "{state}");
+            assert_eq!(
+                workflow
+                    .snapshot()
+                    .await
+                    .tasks
+                    .iter()
+                    .any(|item| item.id == task.id),
+                !crate::local::terminal(state)
+            );
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_runs WHERE id=?")
+                .bind(&run.run_id)
+                .fetch_one(&workflow.local.store.pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "deletion must preserve execution history");
+            if crate::local::terminal(state) {
+                workflow.update_task_documents().await.unwrap();
+                assert!(
+                    workflow
+                        .snapshot()
+                        .await
+                        .messages
+                        .iter()
+                        .any(|message| message.task_id == task.id)
+                );
+            }
+        }
+        assert!(workflow.delete_task("missing").await.is_err());
+    }
 }

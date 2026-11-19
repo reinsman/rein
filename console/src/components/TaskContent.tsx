@@ -21,6 +21,8 @@ export function TaskContent({
 }) {
   const [editing, setEditing] = useState(!draft.document.trim())
   const readOnly = task.status === 'done'
+  const [editingDescription, setEditingDescription] = useState(!draft.description.trim())
+  const descriptionReadOnly = readOnly || task.queue?.status === 'running'
   const spec = tasks.find(
     (value) => value.requirementId === task.requirementId && value.type === 'spec',
   )
@@ -29,15 +31,38 @@ export function TaskContent({
   return (
     <div className="sdd-task-content">
       {!task.type && (
-        <TextField
-          label="任务说明"
-          multiline
-          minRows={6}
-          fullWidth
-          value={draft.description}
-          onChange={(event) => onChange({ description: event.target.value })}
-          disabled={readOnly}
-        />
+        <section className="task-description" aria-label="任务说明">
+          <div className="sdd-document-toolbar">
+            <h3>任务说明</h3>
+            {!descriptionReadOnly && (
+              <Button onClick={() => setEditingDescription(!editingDescription)}>
+                {editingDescription ? '预览说明' : '编辑说明'}
+              </Button>
+            )}
+          </div>
+          {editingDescription && !descriptionReadOnly ? (
+            <TextField
+              multiline
+              minRows={6}
+              fullWidth
+              placeholder="说明任务目标、范围与完成标准，支持 Markdown。"
+              value={draft.description}
+              onChange={(event) => onChange({ description: event.target.value })}
+              slotProps={{ htmlInput: { 'aria-label': '任务说明', maxLength: 12000 } }}
+            />
+          ) : (
+            <div className="sdd-document">
+              {draft.description.trim() ? (
+                <Markdown remarkPlugins={[remarkGfm]}>{draft.description}</Markdown>
+              ) : (
+                <p className="muted">尚未填写任务说明。</p>
+              )}
+            </div>
+          )}
+          {task.queue?.status === 'running' && (
+            <p className="sdd-section-note">任务执行中，可在「Agent 会话」补充指导。</p>
+          )}
+        </section>
       )}
       {documentType && (
         <>

@@ -10,112 +10,33 @@ import {
   TextField,
 } from '@mui/material'
 import type { Agent, AgentConfiguration } from '../types'
-import { agentConfigService } from '../services/agentConfigService'
+import type { AgentPermissions, AgentSkills } from '../localTypes'
+import {
+  agentConfigService,
+  permissionLabels,
+  type TypeDefaults,
+} from '../services/agentConfigService'
 import { reinService } from '../services/reinService'
-import { Row as SettingRow } from './Settings'
+import { localService } from '../services/localService'
+import { Row } from './Settings'
 import { Action, Icon } from './shared'
 
 const categories = [
-  { name: '基本设置', icon: 'settings', description: '设置 Agent 的身份、职责与运行类型。' },
-  { name: 'A2A 配置', icon: 'flow', description: '配置 Agent 间的通信与能力发现。' },
-  { name: '本地配置', icon: 'computer', description: '配置此 Agent 的本地运行参数。' },
-  { name: 'SKILL 配置', icon: 'doc', description: '管理此 Agent 可发现的技能与加载方式。' },
-  { name: '记忆存储', icon: 'layers', description: '配置记忆的存储位置与保留方式。' },
+  { name: '基本设置', icon: 'settings', description: '设置此 Agent 的身份与运行类型。' },
+  {
+    name: '权限配置',
+    icon: 'shield',
+    description: '继承系统中对应 Agent 类型的默认权限，也可以单独覆盖。',
+  },
+  {
+    name: '模型与思考',
+    icon: 'flow',
+    description: '查看从类型配置继承的值，并为此 Agent 设置独立覆盖。',
+  },
+  { name: 'SKILL 配置', icon: 'doc', description: '管理此 Agent 的技能启停和附加技能目录。' },
+  { name: '本地配置', icon: 'computer', description: '配置此 Agent 的工作目录与原生运行环境。' },
+  { name: 'A2A 配置', icon: 'flow', description: '连接由远端管理的 Agent。' },
 ]
-
-type Commit = () => Promise<boolean>
-function ConfigInput({
-  label,
-  value,
-  onChange,
-  numeric = false,
-  onCommit,
-}: {
-  label: string
-  value: string | number
-  onChange: (value: string) => void
-  numeric?: boolean
-  onCommit: Commit
-}) {
-  return (
-    <TextField
-      fullWidth
-      value={value}
-      type={numeric ? 'number' : 'text'}
-      onChange={(e) => onChange(e.target.value)}
-      onBlur={() => void onCommit()}
-      slotProps={{
-        htmlInput: {
-          'aria-label': label,
-          ...(numeric ? { min: 1, max: 86400, step: 1 } : { maxLength: 2000 }),
-        },
-      }}
-    />
-  )
-}
-function ConfigSelect({
-  label,
-  value,
-  options,
-  onChange,
-  onCommit,
-}: {
-  label: string
-  value: string
-  options: string[]
-  onChange: (value: string) => void
-  onCommit: Commit
-}) {
-  return (
-    <Select
-      native
-      fullWidth
-      value={value}
-      inputProps={{ 'aria-label': label }}
-      onChange={(e) => {
-        onChange(e.target.value)
-        void onCommit()
-      }}
-    >
-      {options.map((option) => (
-        <option key={option} value={option}>
-          {label === 'Agent 类型'
-            ? { claude: 'Claude Code', codex: 'Codex', pi: 'pi', a2a: 'A2A' }[
-                option as Agent['provider']
-              ]
-            : option}
-        </option>
-      ))}
-    </Select>
-  )
-}
-function ConfigToggle({
-  label,
-  value,
-  onChange,
-  onCommit,
-}: {
-  label: string
-  value: boolean
-  onChange: (value: boolean) => void
-  onCommit: Commit
-}) {
-  return (
-    <ButtonBase
-      role="switch"
-      aria-label={label}
-      aria-checked={value}
-      className="setting-switch"
-      onClick={() => {
-        onChange(!value)
-        void onCommit()
-      }}
-    >
-      <img src={`/icons/switch-MuiSwitchSmall${value ? 'On' : 'Off'}.svg`} alt="" />
-    </ButtonBase>
-  )
-}
-
 export function AgentSettings({
   agent,
   onClose,
@@ -126,88 +47,181 @@ export function AgentSettings({
   onSaved: (agent: Agent) => void
 }) {
   const creating = !agent
-  const [value, setValue] = useState<AgentConfiguration | null>(null)
-  const draft = useRef<AgentConfiguration | null>(null)
-  const dirty = useRef(false)
-  const navRef = useRef<HTMLElement>(null)
+  const [value, setValue] = useState(() => agentConfigService.get(agent))
   const [category, setCategory] = useState(0)
+  const [dirty, setDirty] = useState(false)
   const [error, setError] = useState('')
-  const [status, setStatus] = useState(
-    creating ? '创建后保存配置，使用 rein agent up 上线' : '请在 Agent 配置文件中修改原生设置',
-  )
   const [saving, setSaving] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const [skills, setSkills] = useState<AgentSkills | null>(agent?.skills ?? null)
+  const [skillError, setSkillError] = useState('')
+  const [loadingSkills, setLoadingSkills] = useState(false)
+  const [installing, setInstalling] = useState(false)
+  const [directories, setDirectories] = useState((agent?.skill_directories ?? []).join('\n'))
+  const navRef = useRef<HTMLElement>(null)
+  const remote = !!value.a2a
+  const [typeDefaults, setTypeDefaults] = useState<{
+    provider: Agent['provider']
+    values?: TypeDefaults
+    error?: string
+  }>()
+  const showTypeDefaults =
+    !remote && (category === 2 || (category === 1 && value.provider === 'codex'))
+  const defaults = typeDefaults?.provider === value.provider ? typeDefaults : undefined
+  const effectivePermissions = value.permissions ?? defaults?.values?.permissions
+  const defaultPermissionsLabel = defaults?.values
+    ? permissionLabels[defaults.values.permissions]
+    : defaults?.error
+      ? '读取失败'
+      : '正在读取…'
+  const typeModel = defaults?.error
+    ? '读取失败'
+    : defaults?.values
+      ? agentConfigService.modelName(defaults.values)
+      : '正在读取…'
+  const typeEffort = defaults?.error
+    ? '读取失败'
+    : defaults?.values
+      ? (defaults.values.reasoning_effort ?? '由原生 CLI 选择')
+      : '正在读取…'
+
   useEffect(() => {
-    let active = true
-    void agentConfigService.get(agent).then((config) => {
-      if (active) {
-        draft.current = config
-        setValue(config)
-      }
-    })
-    return () => {
-      active = false
-    }
-  }, [agent])
+    if (!showTypeDefaults) return
+    const controller = new AbortController()
+    const provider = value.provider
+    void agentConfigService
+      .typeDefaults(provider, AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]))
+      .then(
+        (values) => {
+          if (!controller.signal.aborted) setTypeDefaults({ provider, values })
+        },
+        (failure) => {
+          if (!controller.signal.aborted) setTypeDefaults({ provider, error: String(failure) })
+        },
+      )
+    return () => controller.abort()
+  }, [showTypeDefaults, value.provider])
+
   useEffect(() => {
     const nav = navRef.current
     if (!nav) return
-    const revealSelection = () => {
+    const reveal = () => {
       if (nav.scrollWidth > nav.clientWidth)
         nav.querySelector('.Mui-selected')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     }
-    const observer = new ResizeObserver(revealSelection)
+    const observer = new ResizeObserver(reveal)
     observer.observe(nav)
-    revealSelection()
+    reveal()
     return () => observer.disconnect()
   }, [category])
 
-  function update<K extends keyof AgentConfiguration>(
-    section: K,
-    patch: Partial<AgentConfiguration[K]>,
-  ) {
-    if (!draft.current) return
-    const next = { ...draft.current, [section]: { ...draft.current[section], ...patch } }
-    if (section === 'basic') {
-      const provider = (patch as Partial<AgentConfiguration['basic']>).provider
-      if (provider && next.local.executable === draft.current.basic.provider)
-        next.local = { ...next.local, executable: provider }
-    }
-    draft.current = next
-    dirty.current = true
-    setValue(next)
+  function update(patch: Partial<AgentConfiguration>) {
+    setValue((previous) => ({ ...previous, ...patch }))
+    setDirty(true)
+    setDiscarding(false)
     setError('')
-    setStatus(creating ? '新 Agent 配置待创建' : '编辑中 · 移开焦点后保存')
   }
-  async function save(create = false) {
-    if (creating && !create) return true
-    if (!draft.current || !dirty.current) return true
+  async function save() {
     setSaving(true)
+    setError('')
     try {
-      const saved = await reinService.saveAgent(draft.current, agent?.id)
-      dirty.current = false
-      setError('')
-      setStatus('Agent 配置已保存')
+      const configuration = {
+        ...value,
+        name: value.name.trim(),
+        model: value.model?.trim() || null,
+      }
+      if (configuration.a2a)
+        Object.assign(configuration, {
+          directory: null,
+          executable: null,
+          native_config: null,
+          model: null,
+          prepare: null,
+          permissions: null,
+          reasoning_effort: null,
+          skill_directories: [],
+          skill_source: 'rein',
+          disabled_skills: [],
+        })
+      const saved = await reinService.saveAgent(configuration, agent?.id)
+      setValue(agentConfigService.get(saved))
+      setDirty(false)
       onSaved(saved)
-      return true
+      onClose()
     } catch (err) {
       setError((err as Error).message)
-      setStatus('尚未保存，请修正输入')
-      return false
     } finally {
       setSaving(false)
     }
   }
-  async function close() {
-    await save()
-    onClose()
+  function close() {
+    if (saving || installing) return
+    if (dirty) setDiscarding(true)
+    else onClose()
   }
+  async function refreshSkills(install = false) {
+    if (!agent) return
+    setSkillError('')
+    if (install) setInstalling(true)
+    else setLoadingSkills(true)
+    try {
+      setSkills(
+        await (install ? localService.installReinSpec(agent.id) : localService.skills(agent.id)),
+      )
+    } catch (err) {
+      setSkillError((err as Error).message)
+    } finally {
+      setLoadingSkills(false)
+      setInstalling(false)
+    }
+  }
+  function input(
+    key: 'name' | 'model' | 'directory' | 'executable',
+    label: string,
+    placeholder?: string,
+  ) {
+    return (
+      <TextField
+        fullWidth
+        value={value[key] ?? ''}
+        placeholder={placeholder}
+        disabled={saving || (key === 'name' && !creating)}
+        onChange={(e) => update({ [key]: e.target.value || (key === 'name' ? '' : null) })}
+        slotProps={{ htmlInput: { 'aria-label': label, maxLength: 2000 } }}
+      />
+    )
+  }
+  function select(
+    label: string,
+    current: string,
+    options: string[][],
+    change: (next: string) => void,
+  ) {
+    return (
+      <Select
+        native
+        fullWidth
+        value={current}
+        disabled={saving}
+        inputProps={{ 'aria-label': label }}
+        onChange={(e) => change(e.target.value)}
+      >
+        {options.map(([id, name]) => (
+          <option key={id} value={id}>
+            {name}
+          </option>
+        ))}
+      </Select>
+    )
+  }
+
   return (
     <Dialog
       open
-      onClose={() => void close()}
+      onClose={close}
       maxWidth={false}
       className="settings-dialog agent-config-dialog"
-      aria-labelledby={`agent-settings-${agent?.id ?? 'new'}`}
+      aria-labelledby="agent-settings-title"
       slotProps={{
         paper: {
           sx: {
@@ -220,14 +234,12 @@ export function AgentSettings({
         },
       }}
     >
-      <DialogTitle className="settings-title" id={`agent-heading-${agent?.id ?? 'new'}`}>
-        <span id={`agent-settings-${agent?.id ?? 'new'}`}>
-          {creating ? '新建 Agent' : `Agent 设置 · ${value?.basic.name || agent.name}`}
-        </span>
+      <DialogTitle className="settings-title" id="agent-settings-title">
+        <span>{creating ? '新建 Agent' : `Agent 设置 · ${agent.name}`}</span>
         <Action
           label={creating ? '关闭新建 Agent' : '关闭 Agent 设置'}
           icon="close"
-          onClick={() => void close()}
+          onClick={close}
         />
       </DialogTitle>
       <div className="settings-body">
@@ -237,9 +249,8 @@ export function AgentSettings({
               component="button"
               key={item.name}
               selected={category === i}
-              onClick={async () => {
-                if (await save()) setCategory(i)
-              }}
+              aria-current={category === i ? 'true' : undefined}
+              onClick={() => setCategory(i)}
             >
               <Icon name={item.icon} />
               {item.name}
@@ -247,12 +258,7 @@ export function AgentSettings({
           ))}
           <span className="spacer" />
           <small>
-            {creating ? '新建' : value?.basic.name || agent.name} ·{' '}
-            {value
-              ? { claude: 'Claude Code', codex: 'Codex', pi: 'Pi', a2a: 'A2A' }[
-                  value.basic.provider
-                ]
-              : ''}
+            {creating ? '新建 Agent' : agent.name} · {value.provider === 'codex' ? 'Codex' : 'Pi'}
           </small>
         </nav>
         <section className="settings-content" aria-label={categories[category].name}>
@@ -263,250 +269,351 @@ export function AgentSettings({
               {error}
             </Alert>
           )}
-          {!value ? (
-            <p role="status">正在载入配置…</p>
-          ) : (
-            <div className="settings-fields">
-              {category === 0 && (
-                <>
-                  <SettingRow label="名称" description="在对话和任务中显示的名字。">
-                    <ConfigInput
-                      label="名称"
-                      value={value.basic.name}
-                      onChange={(name) => update('basic', { name })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="描述" description="说明 Agent 的职责与能力。">
-                    <ConfigInput
-                      label="描述"
-                      value={value.basic.description}
-                      onChange={(description) => update('basic', { description })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="Agent 类型" description="选择此 Agent 使用的运行工具。">
-                    <ConfigSelect
-                      label="Agent 类型"
-                      value={value.basic.provider}
-                      options={['codex', 'pi']}
-                      onChange={(provider) =>
-                        update('basic', { provider: provider as Agent['provider'] })
+          <div className="settings-fields">
+            {category === 0 && (
+              <>
+                <Row
+                  label="名称"
+                  description={
+                    creating
+                      ? '1–64 个字母、数字、短横线或下划线。'
+                      : '名称关联对话与任务历史，创建后保持不变。'
+                  }
+                >
+                  {input('name', '名称')}
+                </Row>
+                <Row label="Agent 类型" description="选择此 Agent 使用的运行工具。">
+                  {select(
+                    'Agent 类型',
+                    value.provider,
+                    [
+                      ['codex', 'Codex'],
+                      ['pi', 'Pi'],
+                    ],
+                    (provider) =>
+                      update({
+                        provider: provider as Agent['provider'],
+                        permissions: null,
+                        reasoning_effort: null,
+                      }),
+                  )}
+                </Row>
+              </>
+            )}
+            {[1, 2, 3, 4].includes(category) && remote ? (
+              <Alert severity="info">此 Agent 通过 A2A 运行，权限、技能和模型由远端配置。</Alert>
+            ) : (
+              <>
+                {category === 1 && (
+                  <>
+                    {value.provider === 'codex' && defaults?.error && (
+                      <Alert severity="error">{defaults.error}</Alert>
+                    )}
+                    <Row
+                      label="访问级别"
+                      description={
+                        value.provider === 'codex'
+                          ? `类型默认值 · ${defaultPermissionsLabel}`
+                          : '继承 Pi 的默认权限，由启动账户和运行环境决定。'
                       }
-                      onCommit={save}
+                    >
+                      {value.provider === 'pi' ? (
+                        <span className="agent-setting-value">原生完全访问</span>
+                      ) : (
+                        select(
+                          '访问级别',
+                          value.permissions ?? '',
+                          [['', '继承类型默认权限'], ...Object.entries(permissionLabels)],
+                          (permissions) =>
+                            update({
+                              permissions: (permissions || null) as AgentPermissions | null,
+                            }),
+                        )
+                      )}
+                    </Row>
+                    {value.provider === 'codex' && effectivePermissions && (
+                      <Alert
+                        severity={effectivePermissions === 'full_access' ? 'warning' : 'info'}
+                        className="agent-config-error"
+                      >
+                        {effectivePermissions === 'full_access'
+                          ? '完全访问关闭 Codex 沙箱和审批，Agent 可在启动账户的权限范围内操作。'
+                          : effectivePermissions === 'read_only'
+                            ? '使用 Codex 只读沙箱，超出权限的操作需要审批。'
+                            : '使用 Codex 项目写入沙箱，超出权限的操作需要审批。'}
+                      </Alert>
+                    )}
+                  </>
+                )}
+                {category === 2 && (
+                  <>
+                    {defaults?.error && <Alert severity="error">{defaults.error}</Alert>}
+                    <Row label="模型" description={`类型默认值 · ${typeModel}`}>
+                      <div className="agent-setting-override">
+                        {input('model', '模型覆盖', '留空继承')}
+                        {value.model?.trim() && (
+                          <span className="agent-setting-source">此 Agent 独立设置</span>
+                        )}
+                      </div>
+                    </Row>
+                    <Row label="思考强度" description={`类型默认值 · ${typeEffort}`}>
+                      <div className="agent-setting-override">
+                        {select(
+                          '思考强度',
+                          value.reasoning_effort ?? '',
+                          [
+                            ['', '继承类型默认值'],
+                            ...(value.provider === 'pi'
+                              ? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+                              : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+                            ).map((level) => [level, level]),
+                          ],
+                          (reasoning_effort) =>
+                            update({ reasoning_effort: reasoning_effort || null }),
+                        )}
+                        {value.reasoning_effort && (
+                          <span className="agent-setting-source">此 Agent 独立设置</span>
+                        )}
+                      </div>
+                    </Row>
+                    <p className="settings-description agent-settings-note">
+                      类型默认值来自系统配置的「Agent 配置」。可用的思考强度取决于模型。
+                    </p>
+                  </>
+                )}
+                {category === 3 && (
+                  <>
+                    <section className="agent-skill-group" aria-label="默认技能来源">
+                      <Row
+                        label="默认技能来源"
+                        description="默认只加载 Rein 技能目录和附加目录；原生目录兼容模式用于不支持指定目录的 CLI。"
+                      >
+                        {select(
+                          '默认技能来源',
+                          value.skill_source ?? 'rein',
+                          [
+                            ['rein', 'Rein 技能目录（默认）'],
+                            ['native', '原生技能目录（兼容）'],
+                          ],
+                          (skill_source) =>
+                            update({ skill_source: skill_source as 'rein' | 'native' }),
+                        )}
+                      </Row>
+                      <div className="agent-skill-children">
+                        <Row
+                          label="默认技能目录"
+                          description={
+                            value.skill_source === 'native'
+                              ? '使用原生 Agent 的用户级和项目技能目录。'
+                              : '由 Rein 管理，不自动加载原生用户或项目技能目录。'
+                          }
+                        >
+                          <code className="skill-default-path">
+                            {(value.skill_source === 'native'
+                              ? skills?.install_path
+                              : skills?.source_path
+                            )?.replace(/\/rein-spec$/, '') ?? '创建 Agent 后显示实际目录'}
+                          </code>
+                        </Row>
+                      </div>
+                    </section>
+                    <Row
+                      label="附加技能目录"
+                      description="默认留空。每行一个绝对目录，保存后扫描其中的 SKILL.md；清空可移除附加目录。"
+                    >
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={2}
+                        maxRows={5}
+                        value={directories}
+                        disabled={saving}
+                        placeholder="/absolute/path/to/skills"
+                        slotProps={{ htmlInput: { 'aria-label': '技能目录' } }}
+                        onChange={(e) => {
+                          setDirectories(e.target.value)
+                          update({
+                            skill_directories: e.target.value
+                              .split('\n')
+                              .map((s) => s.trim())
+                              .filter(Boolean),
+                          })
+                        }}
+                      />
+                    </Row>
+                    <section className="agent-skill-group" aria-label="已发现的技能">
+                      <Row
+                        label="已发现的技能"
+                        description="扫描所选来源及已保存的附加目录。启停仅对本 Agent 生效，来源或目录更改后先保存再刷新。"
+                      >
+                        <Button
+                          variant="outlined"
+                          disabled={creating || loadingSkills || installing || dirty}
+                          onClick={() => void refreshSkills()}
+                        >
+                          {loadingSkills ? '正在刷新…' : '刷新技能'}
+                        </Button>
+                      </Row>
+                      <div className="agent-skill-children agent-skill-list">
+                        {creating ? (
+                          <p className="settings-description">
+                            创建 Agent 后可查看并管理已发现的技能。
+                          </p>
+                        ) : (
+                          <>
+                            {(skillError || skills?.error) && (
+                              <Alert severity="error" className="agent-config-error">
+                                {skillError || skills?.error}
+                              </Alert>
+                            )}
+                            {!skills?.entries?.length && !skills?.error && (
+                              <p className="settings-description">
+                                尚未发现技能。可以添加技能目录，或安装下方的 rein-spec。
+                              </p>
+                            )}
+                            {skills?.entries?.map((skill) => (
+                              <Row key={skill.path} label={skill.name} description={skill.path}>
+                                <ButtonBase
+                                  role="switch"
+                                  aria-label={`启用技能 ${skill.name}`}
+                                  aria-checked={!value.disabled_skills?.includes(skill.path)}
+                                  className="setting-switch"
+                                  disabled={saving}
+                                  onClick={() =>
+                                    update({
+                                      disabled_skills: value.disabled_skills?.includes(skill.path)
+                                        ? value.disabled_skills.filter(
+                                            (path) => path !== skill.path,
+                                          )
+                                        : [...(value.disabled_skills ?? []), skill.path],
+                                    })
+                                  }
+                                >
+                                  <img
+                                    src={`/icons/switch-MuiSwitchSmall${value.disabled_skills?.includes(skill.path) ? 'Off' : 'On'}.svg`}
+                                    alt=""
+                                  />
+                                </ButtonBase>
+                              </Row>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    </section>
+                    {!creating && (
+                      <>
+                        <Row
+                          label="原生目录备用安装"
+                          description={
+                            skills?.rein_spec_installed
+                              ? '已安装在原生用户技能目录；兼容模式可使用，已有文件不会被覆盖。'
+                              : '安装到原生用户技能目录，同一配置目录的其他 Agent 也可发现；不覆盖已有文件。'
+                          }
+                        >
+                          <Button
+                            variant="outlined"
+                            disabled={
+                              installing || loadingSkills || dirty || skills?.rein_spec_installed
+                            }
+                            onClick={() => void refreshSkills(true)}
+                          >
+                            {installing
+                              ? '正在安装…'
+                              : skills?.rein_spec_installed
+                                ? '已安装'
+                                : '安装 rein-spec'}
+                          </Button>
+                        </Row>
+                        {value.provider === 'pi' && (
+                          <p className="settings-description">
+                            Pi
+                            的技能筛选覆盖此处发现的文件技能；包和扩展提供的技能请通过原生配置管理。
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+                {category === 4 && (
+                  <>
+                    <Row
+                      label="工作目录"
+                      description="独立对话留空使用 Agent 类型目录。项目内的任务和对话使用项目的首选工作目录。"
+                    >
+                      {input('directory', '工作目录', `<REIND_HOME>/agents/${value.provider}/`)}
+                    </Row>
+                    <Row
+                      label="可执行文件"
+                      description="留空使用 PATH 中的原生 CLI，或指定可执行文件绝对路径。"
+                    >
+                      {input('executable', '可执行文件', value.provider)}
+                    </Row>
+                    <Row
+                      label="原生配置"
+                      description="同类型 Agent 共用原生配置，可在系统配置的「Agent 配置」中编辑。"
+                    >
+                      <code className="skill-default-path">
+                        {`<REIND_HOME>/agents/${value.provider}/`}
+                      </code>
+                    </Row>
+                  </>
+                )}
+              </>
+            )}
+            {category === 5 && (
+              <>
+                <Row label="远程 Agent" description="通过 A2A 连接远端；开启后本地执行配置不适用。">
+                  <ButtonBase
+                    role="switch"
+                    aria-label="远程 Agent"
+                    aria-checked={remote}
+                    className="setting-switch"
+                    disabled={saving}
+                    onClick={() =>
+                      update({ a2a: remote ? null : { url: 'http://127.0.0.1:8080/a2a' } })
+                    }
+                  >
+                    <img src={`/icons/switch-MuiSwitchSmall${remote ? 'On' : 'Off'}.svg`} alt="" />
+                  </ButtonBase>
+                </Row>
+                {remote && (
+                  <Row label="服务地址" description="远端 Agent 的完整 HTTP 或 HTTPS 地址。">
+                    <TextField
+                      fullWidth
+                      value={value.a2a!.url}
+                      disabled={saving}
+                      slotProps={{ htmlInput: { 'aria-label': '服务地址' } }}
+                      onChange={(e) => update({ a2a: { ...value.a2a!, url: e.target.value } })}
                     />
-                  </SettingRow>
-                </>
-              )}
-              {category === 1 && (
-                <>
-                  <SettingRow label="远程 Agent" description="通过 A2A 连接远程 Agent。">
-                    <ConfigToggle
-                      label="远程 Agent"
-                      value={value.a2a.enabled}
-                      onChange={(enabled) => update('a2a', { enabled })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="服务地址" description="Agent 的 A2A 接口地址。">
-                    <ConfigInput
-                      label={'服务地址'}
-                      value={value.a2a.endpoint}
-                      onChange={(endpoint) => update('a2a', { endpoint })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="Agent Card" description="用于发现能力、技能与认证方式。">
-                    <ConfigInput
-                      label={'Agent Card'}
-                      value={value.a2a.cardPath}
-                      onChange={(cardPath) => update('a2a', { cardPath })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="传输协议" description="与远程 Agent 声明的接口一致。">
-                    <ConfigSelect
-                      label={'传输协议'}
-                      value={value.a2a.transport}
-                      options={['JSON-RPC', 'HTTP+JSON']}
-                      onChange={(transport) =>
-                        update('a2a', {
-                          transport: transport as AgentConfiguration['a2a']['transport'],
-                        })
-                      }
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="请求超时（秒）" description="单次通信的最大等待时间。">
-                    <ConfigInput
-                      label={'请求超时（秒）'}
-                      value={value.a2a.timeout}
-                      onChange={(timeout) => update('a2a', { timeout: Number(timeout) })}
-                      numeric={true}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="流式响应" description="按事件接收执行进度。">
-                    <ConfigToggle
-                      label={'流式响应'}
-                      value={value.a2a.streaming}
-                      onChange={(streaming) => update('a2a', { streaming })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                </>
-              )}
-              {category === 2 && (
-                <>
-                  <SettingRow label="可执行文件" description="由执行服务解析，此处不会运行。">
-                    <ConfigInput
-                      label={'可执行文件'}
-                      value={value.local.executable}
-                      onChange={(executable) => update('local', { executable })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="工作目录" description="运行任务时使用的目录。">
-                    <ConfigInput
-                      label={'工作目录'}
-                      value={value.local.workingDirectory}
-                      onChange={(workingDirectory) => update('local', { workingDirectory })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="默认模型" description="跟随本机 CLI 的模型设置。">
-                    <ConfigInput
-                      label={'默认模型'}
-                      value={value.local.model}
-                      onChange={(model) => update('local', { model })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="审批方式" description="需要人工确认的操作范围。">
-                    <ConfigSelect
-                      label={'审批方式'}
-                      value={value.local.approval}
-                      options={['每次确认', '项目目录写入', '只读']}
-                      onChange={(approval) =>
-                        update('local', {
-                          approval: approval as AgentConfiguration['local']['approval'],
-                        })
-                      }
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="执行超时（秒）" description="任务运行的最长等待时间。">
-                    <ConfigInput
-                      label={'执行超时（秒）'}
-                      value={value.local.timeout}
-                      onChange={(timeout) => update('local', { timeout: Number(timeout) })}
-                      numeric={true}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                </>
-              )}
-              {category === 3 && (
-                <>
-                  <SettingRow label="技能目录" description="每个目录包含独立的 SKILL.md。">
-                    <ConfigInput
-                      label={'技能目录'}
-                      value={value.skills.directories}
-                      onChange={(directories) => update('skills', { directories })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="启用的技能" description="用英文逗号分隔技能名称。">
-                    <ConfigInput
-                      label={'启用的技能'}
-                      value={value.skills.enabled}
-                      onChange={(enabled) => update('skills', { enabled })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="自动发现" description="从配置的目录中发现技能。">
-                    <ConfigToggle
-                      label={'自动发现'}
-                      value={value.skills.autoDiscover}
-                      onChange={(autoDiscover) => update('skills', { autoDiscover })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="允许技能命令" description="允许通过技能命令显式调用。">
-                    <ConfigToggle
-                      label={'允许技能命令'}
-                      value={value.skills.allowCommands}
-                      onChange={(allowCommands) => update('skills', { allowCommands })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                </>
-              )}
-              {category === 4 && (
-                <>
-                  <SettingRow label="存储方式" description="前端仅保存配置，不创建存储。">
-                    <ConfigSelect
-                      label={'存储方式'}
-                      value={value.memory.backend}
-                      options={['本地文件', 'SQLite', 'Chroma']}
-                      onChange={(backend) =>
-                        update('memory', {
-                          backend: backend as AgentConfiguration['memory']['backend'],
-                        })
-                      }
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="存储目录" description="此 Agent 的记忆存储位置。">
-                    <ConfigInput
-                      label={'存储目录'}
-                      value={value.memory.directory}
-                      onChange={(directory) => update('memory', { directory })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="命名空间" description="隔离不同 Agent 的记忆。">
-                    <ConfigInput
-                      label={'命名空间'}
-                      value={value.memory.namespace}
-                      onChange={(namespace) => update('memory', { namespace })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="保留天数" description="记忆记录的保留时间。">
-                    <ConfigInput
-                      label={'保留天数'}
-                      value={value.memory.retentionDays}
-                      onChange={(retentionDays) =>
-                        update('memory', { retentionDays: Number(retentionDays) })
-                      }
-                      numeric={true}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                  <SettingRow label="自动保存" description="任务结束后保存记忆。">
-                    <ConfigToggle
-                      label={'自动保存'}
-                      value={value.memory.autoSave}
-                      onChange={(autoSave) => update('memory', { autoSave })}
-                      onCommit={save}
-                    />
-                  </SettingRow>
-                </>
-              )}
-            </div>
+                  </Row>
+                )}
+              </>
+            )}
+          </div>
+          {discarding && (
+            <Alert
+              severity="warning"
+              className="agent-config-error"
+              action={<Button onClick={onClose}>放弃更改</Button>}
+            >
+              有尚未保存的更改。可以保存，或放弃后关闭。
+            </Alert>
           )}
           <div className="settings-status" role="status">
-            <span>{status}</span>
-            {creating && (
-              <Button
-                variant="contained"
-                disabled={saving || !value?.basic.name.trim()}
-                onClick={() => void save(true)}
-              >
-                {saving ? '正在创建…' : '创建 Agent'}
-              </Button>
-            )}
+            <span>
+              {creating
+                ? '创建后使用 rein agent up 上线'
+                : dirty
+                  ? '更改待保存 · 下次运行时读取配置'
+                  : '配置保存到本机 · 下次运行时读取配置'}
+            </span>
+            <Button
+              variant="contained"
+              disabled={saving || installing || !value.name.trim() || (!creating && !dirty)}
+              onClick={() => void save()}
+            >
+              {saving ? '正在保存…' : creating ? '创建 Agent' : '保存配置'}
+            </Button>
           </div>
         </section>
       </div>

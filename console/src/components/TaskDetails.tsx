@@ -20,13 +20,15 @@ import {
   taskNumber,
   taskTypeInfo,
 } from '../services/sdd'
-import { reinService } from '../services/reinService'
+import { reinService, taskHasActiveAgent } from '../services/reinService'
+import { preferencesService } from '../services/preferences'
 import { Action, Icon, StatusDot } from './shared'
 import { statusLabels } from '../constants'
 import { TaskTypeBadge } from './TaskTypeBadge'
 import { TaskContent } from './TaskContent'
 import { HandoffLinks } from './HandoffLinks'
 import { TaskRun } from './TaskRun'
+import { NodeStatus } from './NodeStatus'
 
 interface Props {
   data: AppData
@@ -60,7 +62,15 @@ export function TaskDetails({
   onTask,
   notify,
 }: Props) {
-  const [tab, setTab] = useState(0)
+  const [tab, setTab] = useState(() => {
+    const saved = task ? preferencesService.taskTab(task.id) : null
+    if (saved !== null && (saved < 2 || task?.queue)) return saved
+    return task?.queue?.status === 'running' ? 1 : 0
+  })
+  const taskId = task?.id
+  useEffect(() => {
+    if (taskId) preferencesService.setTaskTab(taskId, tab)
+  }, [taskId, tab])
   const [draft, setDraft] = useState(() => taskDraft(task))
   const [baseline, setBaseline] = useState(() => JSON.stringify(taskDraft(task)))
   const [saving, setSaving] = useState(false)
@@ -81,11 +91,8 @@ export function TaskDetails({
   const todoSnapWidth = Math.min(todoWidth, maximumWidth)
   const preferredWidth = widthRatio === null ? defaultWidth : widthRatio * viewportWidth
   // Clamp only the rendered size: a smaller window must not overwrite the saved ratio.
-  const normalWidth = snappedToTodo
-    ? todoSnapWidth
-    : dockedToSidebar
-      ? maximumWidth
-      : Math.max(Math.min(260, maximumWidth), Math.min(preferredWidth, maximumWidth))
+  const customWidth = Math.max(Math.min(260, maximumWidth), Math.min(preferredWidth, maximumWidth))
+  const normalWidth = snappedToTodo ? todoSnapWidth : dockedToSidebar ? maximumWidth : customWidth
   const minimumWidth = Math.min(360, defaultWidth, normalWidth, maximumWidth)
   const renderedWidth = expanded ? maximumWidth : normalWidth
   const restoringCustom = !expanded && snappedToTodo && returning
@@ -100,6 +107,33 @@ export function TaskDetails({
         : `覆盖 ${panelLabel} 栏`
   const previousLayout = useRef({ availableLeft, viewportWidth, maximumWidth, normalWidth })
   const detailRef = useRef<HTMLElement>(null)
+  const retractWidth = useCallback(() => {
+    setDockedToSidebar(false)
+    if (expanded) onExpand()
+    if (restoringTodo && !returning && todoSnapWidth < renderedWidth - 1) {
+      setSnappedToTodo(true)
+      setReturning(true)
+    } else {
+      setSnappedToTodo(false)
+      setReturning(true)
+      if (
+        !(expanded || snappedToTodo || dockedToSidebar) ||
+        Math.abs(customWidth - renderedWidth) < 1
+      )
+        onClose()
+    }
+  }, [
+    expanded,
+    onExpand,
+    restoringTodo,
+    returning,
+    todoSnapWidth,
+    renderedWidth,
+    snappedToTodo,
+    dockedToSidebar,
+    customWidth,
+    onClose,
+  ])
   useLayoutEffect(() => {
     const previous = previousLayout.current
     // Follow a sidebar toggle only when the normal detail edge was already touching it.
@@ -135,7 +169,7 @@ export function TaskDetails({
         event.preventDefault()
         event.stopPropagation()
         if (!saving) setDiscard(true)
-      } else if (event.type === 'pointerdown') onClose()
+      } else if (event.type === 'pointerdown') retractWidth()
     }
     document.addEventListener('pointerdown', outside, true)
     document.addEventListener('click', outside, true)
@@ -143,7 +177,7 @@ export function TaskDetails({
       document.removeEventListener('pointerdown', outside, true)
       document.removeEventListener('click', outside, true)
     }
-  }, [task, dirty, saving, onClose])
+  }, [task, dirty, saving, retractWidth])
   useEffect(() => {
     if (!dirty) return
     const warn = (event: BeforeUnloadEvent) => {
@@ -155,10 +189,13 @@ export function TaskDetails({
   }, [dirty])
   if (!task) return null
   const related = data.tasks.filter((value) => value.requirementId === task.requirementId)
+  const projectId = data.requirements.find((item) => item.id === task.requirementId)?.projectId
+  const project = data.projects.find((item) => item.id === projectId)
   const dependencies = predecessors(task, related)
   const blocked = blockedReason(task, related)
   const completion = completionError({ ...task, ...draft }, related)
   const readOnly = task.status === 'done'
+  const assignedAgent = task.queue ? (task.queue.agent_id ?? '') : draft.agent_id
   const info = task.type ? taskTypeInfo[task.type] : undefined
   const canRepair =
     task.type === 'verification' &&
@@ -322,6 +359,7 @@ export function TaskDetails({
             <TaskTypeBadge type={task.type} />
             <small>{task.displayId ?? taskNumber(task)}</small>
             <h2>{task.title}</h2>
+            <NodeStatus taskId={task.id} source />
             <span className="spacer" />
             <Action label={widthActionLabel} icon="expand" onClick={cycleWidth} />
             <Action label="关闭任务详情" icon="close" onClick={requestClose} />
@@ -335,13 +373,13 @@ export function TaskDetails({
             <label htmlFor={`task-agent-${task.id}`}>负责人</label>
             <select
               id={`task-agent-${task.id}`}
-              value={draft.agent_id}
+              value={assignedAgent}
               disabled={readOnly || saving || !!task.queue}
               onChange={(event) => changeDraft({ agent_id: event.target.value })}
             >
               <option value="">未分配</option>
-              {draft.agent_id && !data.agents.some((agent) => agent.id === draft.agent_id) && (
-                <option value={draft.agent_id}>{draft.agent_id}（已移除）</option>
+              {assignedAgent && !data.agents.some((agent) => agent.id === assignedAgent) && (
+                <option value={assignedAgent}>{assignedAgent}（已移除）</option>
               )}
               {data.agents.map((agent) => (
                 <option key={agent.id} value={agent.id}>
@@ -373,17 +411,40 @@ export function TaskDetails({
               value={tab}
               onChange={(_, value: number) => setTab(value)}
               aria-label="任务详情页签"
+              variant={task.queue ? 'scrollable' : 'standard'}
             >
               <Tab
                 label={info?.tab ?? '任务说明'}
                 id="detail-tab-0"
                 aria-controls="detail-panel-0"
               />
-              <Tab label="工作记录" id="detail-tab-1" aria-controls="detail-panel-1" />
+              <Tab
+                label={task.queue ? 'Agent 会话' : '操作记录'}
+                id="detail-tab-1"
+                aria-controls="detail-panel-1"
+              />
+              {task.queue && (
+                <Tab
+                  icon={<Icon name="artifacts" size={14} />}
+                  iconPosition="start"
+                  label="产物"
+                  id="detail-tab-2"
+                  aria-controls="detail-panel-2"
+                />
+              )}
+              {task.queue && (
+                <Tab
+                  icon={<Icon name="handoff" size={14} />}
+                  iconPosition="start"
+                  label="Handoff"
+                  id="detail-tab-3"
+                  aria-controls="detail-panel-3"
+                />
+              )}
             </Tabs>
           </div>
           <div
-            className="detail-body sdd-detail-body"
+            className={`detail-body sdd-detail-body${tab === 1 && task.queue ? ' task-session-body' : ''}`}
             role="tabpanel"
             id={`detail-panel-${tab}`}
             aria-labelledby={`detail-tab-${tab}`}
@@ -393,7 +454,8 @@ export function TaskDetails({
                 <TaskContent task={task} tasks={data.tasks} draft={draft} onChange={changeDraft} />
                 {task.queue && (
                   <>
-                    <p className="sdd-section-note">
+                    <p className="sdd-section-note task-context-source">
+                      <Icon name="doc" size={14} />
                       {task.queue.role === 'coding' ? 'Coding' : 'Review'} ·{' '}
                       {task.queue.spec_id
                         ? data.workflow?.specs.find((spec) => spec.id === task.queue?.spec_id)
@@ -401,33 +463,43 @@ export function TaskDetails({
                         : '需求直接任务'}
                     </p>
                     {task.queue.error && <Alert severity="error">{task.queue.error}</Alert>}
-                    <HandoffLinks task={task.queue} workflow={data.workflow} />
                   </>
                 )}
               </fieldset>
+            ) : task.queue && tab === 3 ? (
+              <div className="task-handoffs">
+                <HandoffLinks
+                  task={task.queue}
+                  workflow={data.workflow}
+                  empty="暂无交接文件。任务提交的 Handoff 会显示在这里。"
+                  inline
+                />
+              </div>
+            ) : task.queue ? (
+              <TaskRun
+                key={task.queue.run_id ?? task.queue.last_run_id ?? task.queue.id}
+                task={task.queue}
+                agents={data.agents}
+                artifacts={tab === 2}
+                directory={project?.preferred_directory ?? project?.directories[0]}
+              />
             ) : (
               <div className="sdd-task-history">
-                <h3>工作记录</h3>
-                {task.queue ? (
-                  <TaskRun task={task.queue} agents={data.agents} />
+                <h3>操作记录</h3>
+                <p className="sdd-section-note">
+                  这里记录任务的创建、保存和确认操作。负责人分配不会自动启动 Agent。
+                </p>
+                {task.history?.length ? (
+                  [...task.history].reverse().map((item, index) => (
+                    <div className="sdd-history-row" key={`${item.at}-${index}`}>
+                      <time dateTime={new Date(item.at).toISOString()}>
+                        {new Date(item.at).toLocaleString('zh-CN')}
+                      </time>
+                      <span>{item.message}</span>
+                    </div>
+                  ))
                 ) : (
-                  <>
-                    <p className="sdd-section-note">
-                      这里记录任务的创建、保存和确认操作。负责人分配不会自动启动 Agent。
-                    </p>
-                    {task.history?.length ? (
-                      [...task.history].reverse().map((item, index) => (
-                        <div className="sdd-history-row" key={`${item.at}-${index}`}>
-                          <time dateTime={new Date(item.at).toISOString()}>
-                            {new Date(item.at).toLocaleString('zh-CN')}
-                          </time>
-                          <span>{item.message}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="muted">尚无工作记录。</p>
-                    )}
-                  </>
+                  <p className="muted">尚无操作记录。</p>
                 )}
               </div>
             )}
@@ -449,7 +521,7 @@ export function TaskDetails({
               </span>
             </div>
             <div className="detail-controls">
-              {!readOnly && (
+              {!readOnly && tab === 0 && (
                 <Button
                   variant="outlined"
                   disabled={!dirty || saving}
@@ -476,9 +548,9 @@ export function TaskDetails({
                   <Button
                     variant="contained"
                     disabled={saving}
-                    onClick={() => void save(task.status === 'running' ? 'todo' : 'running')}
+                    onClick={() => void save(taskHasActiveAgent(task) ? 'todo' : 'running')}
                   >
-                    {task.status === 'running' ? '停止任务' : '开始任务'}
+                    {taskHasActiveAgent(task) ? '停止任务' : '开始任务'}
                   </Button>
                 )
               ) : readOnly ? (
@@ -528,7 +600,7 @@ export function TaskDetails({
         aria-labelledby="discard-task-title"
       >
         <DialogTitle id="discard-task-title">草稿尚未保存</DialogTitle>
-        <DialogContent>关闭任务详情会丢失本次尚未保存的更改。</DialogContent>
+        <DialogContent>关闭任务详情会丢失尚未保存的任务说明修改。</DialogContent>
         <DialogActions>
           <Button onClick={() => setDiscard(false)}>继续编辑</Button>
           <Button

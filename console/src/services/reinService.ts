@@ -8,10 +8,9 @@ import type {
   Task,
   TaskStatus,
 } from '../types'
-import type { Project as StoredProject, Task as StoredTask } from '../localTypes'
-import { localService, request } from './localService'
-import { blockedReason, completionError, taskNumber, taskTypes } from './sdd'
-import { workflowService, type QueueRole } from './workflow'
+import type { AgentConfig, Project as StoredProject, Task as StoredTask } from '../localTypes'
+import { localService, request, toAgent } from './localService'
+import { workflowService, type QueueRole, type WorkflowSnapshot } from './workflow'
 
 let data: AppData = {
   projects: [],
@@ -25,10 +24,39 @@ let data: AppData = {
 let projects: StoredProject[] = []
 let refresh: Promise<void> | undefined
 let projectRefresh: Promise<void> | undefined
+let source: EventSource | undefined
 const subscribers = new Set<(data: AppData) => void>()
 const clone = () => structuredClone(data)
 function publish() {
   for (const subscriber of subscribers) subscriber(clone())
+}
+function subscribeEvents() {
+  source = new EventSource('/api/events')
+  source.addEventListener('agents', (event) => {
+    const update = JSON.parse(event.data) as { agents?: AgentConfig[]; error?: string }
+    data.agentError = update.error
+    data.agents = update.agents
+      ? update.agents.map(toAgent)
+      : data.agents.map((agent) => ({ ...agent, online: false }))
+    data.agentLoading = false
+    applyProjects(projects)
+    publish()
+  })
+  source.addEventListener('workflow', (event) => {
+    const update = JSON.parse(event.data) as WorkflowSnapshot & { error?: string }
+    data.workflowError = update.error
+    if (!update.error) data.workflow = update
+    applyProjects(projects)
+    publish()
+  })
+  source.onerror = () => {
+    data.agentError = '实时连接已断开，正在重连…'
+    data.workflowError = data.agentError
+    data.agentLoading = false
+    data.agents = data.agents.map((agent) => ({ ...agent, online: false }))
+    applyProjects(projects)
+    publish()
+  }
 }
 function applyProjects(values: StoredProject[]) {
   projects = values
@@ -48,23 +76,7 @@ function applyProjects(values: StoredProject[]) {
       description: r.description,
     })),
   )
-  data.tasks = values.flatMap((p) =>
-    p.requirements.flatMap((r) =>
-      r.tasks.map((t) => ({
-        ...t,
-        id: t.id,
-        displayId: taskNumber(t),
-        title: t.title,
-        requirementId: r.id,
-        agentId: t.agent_id ?? '',
-        status: t.status,
-        execution: t.status === 'done' ? ('completed' as const) : ('queued' as const),
-        statusText: { todo: '待执行', running: '进行中', done: '已完成' }[t.status],
-        description: t.description ?? '',
-        dependsOn: t.depends_on ?? [],
-      })),
-    ),
-  )
+  data.tasks = []
   for (const queue of data.workflow?.tasks ?? []) {
     const roleAgents =
       (queue.role === 'coding'
@@ -78,7 +90,6 @@ function applyProjects(values: StoredProject[]) {
           : !data.workflow?.settings.automatic && !queue.manual
             ? '等待手动开始'
             : '待领取'
-    data.tasks = data.tasks.filter((task) => task.id !== queue.id)
     data.tasks.push({
       id: queue.id,
       title: queue.title,
@@ -90,7 +101,9 @@ function applyProjects(values: StoredProject[]) {
       dependsOn: [],
       displayId: `T-${queue.id.slice(0, 6)}`,
       execution:
-        queue.status === 'running'
+        queue.status === 'running' &&
+        !['completed', 'failed', 'cancelled'].includes(queue.execution_state ?? '') &&
+        (!!queue.run_id || !!queue.request_id || (!queue.paused && !queue.error))
           ? ['waiting_input', 'waiting_approval'].includes(queue.execution_state ?? '')
             ? 'waiting'
             : 'executing'
@@ -99,7 +112,7 @@ function applyProjects(values: StoredProject[]) {
             : 'queued',
       statusText: queue.error
         ? '执行需处理'
-        : queue.paused
+        : queue.paused || ['failed', 'cancelled'].includes(queue.execution_state ?? '')
           ? '已暂停'
           : queue.status === 'running'
             ? queue.execution_state === 'waiting_approval'
@@ -137,6 +150,7 @@ async function refreshAgents() {
       data.agents = data.agents.map((agent) => ({ ...agent, online: false }))
     } finally {
       data.agentLoading = false
+      applyProjects(projects)
       publish()
     }
   })()
@@ -178,18 +192,19 @@ export const reinService = {
   refreshAgents,
   refreshProjects,
   async getData() {
-    await Promise.all([refreshAgents(), refreshProjects(), refreshWorkflow()])
+    await refreshProjects()
     return clone()
   },
   subscribe(fn: (value: AppData) => void) {
     subscribers.add(fn)
-    const timer = window.setInterval(() => {
-      void refreshAgents()
-      void refreshWorkflow()
-    }, 2000)
+    fn(clone())
+    if (!source) subscribeEvents()
     return () => {
-      window.clearInterval(timer)
       subscribers.delete(fn)
+      if (!subscribers.size) {
+        source?.close()
+        source = undefined
+      }
     }
   },
   async login(email: string, password: string) {
@@ -221,86 +236,26 @@ export const reinService = {
     if (!task) throw new Error('任务不存在。')
     await this.moveTask(id, patch.status ?? task.status)
   },
-  async saveTask(id: string, patch: Partial<StoredTask>, action = '保存草稿', beforeId?: string) {
+  async saveTask(id: string, patch: Partial<StoredTask>, _action?: string) {
     const task = data.tasks.find((value) => value.id === id)
-    if (!task) throw new Error('任务不存在。')
-    if (task.queue) {
-      if (patch.status === 'done')
-        throw new Error('任务完成由 Agent 结果与 handoff 确认，不能手动跳过执行。')
-      await workflowService.taskAction(
-        id,
-        patch.status === 'running' ? 'start' : patch.status === 'todo' ? 'stop' : 'save',
-        { description: patch.description, agent_id: patch.agent_id },
-      )
-      await refreshWorkflow()
-      return structuredClone(data.tasks.find((t) => t.id === id)!)
-    }
-    if (taskHasActiveAgent(task)) throw new Error('Agent 会话仍在运行，请先停止任务再修改。')
-    const previous = projects.find((p) => p.requirements.some((r) => r.id === task.requirementId))
-    if (!previous) throw new Error('所属项目不存在。')
-    const next = structuredClone(previous)
-    const requirement = next.requirements.find((r) => r.id === task.requirementId)!
-    const value = requirement.tasks.find((item) => item.id === id)!
-    const oldStatus = value.status
-    Object.assign(value, patch)
-    if (value.status !== 'todo') {
-      const reason = blockedReason(value, requirement.tasks)
-      if (reason) throw new Error(reason)
-    }
-    if (value.status === 'done' && oldStatus !== 'done') {
-      const reason = completionError({ ...value, status: oldStatus }, requirement.tasks)
-      if (reason) throw new Error(reason)
-    }
-    const log = (item: StoredTask, message: string) => {
-      // shortcut: keep the latest 200 actions here; use SQLite when a complete audit trail is needed.
-      item.history = [...(item.history ?? []).slice(-199), { at: Date.now(), message }]
-    }
-    if (value.type && oldStatus === 'done' && value.status !== 'done') {
-      const index = taskTypes.indexOf(value.type)
-      for (const dependent of requirement.tasks) {
-        if (dependent.type && taskTypes.indexOf(dependent.type) > index) {
-          dependent.status = 'todo'
-          if (dependent.type === 'verification')
-            dependent.checks = dependent.checks?.map((check) => ({ ...check, status: 'pending' }))
-          log(dependent, `前置任务 ${taskNumber(value)} 重新打开，需要复核`)
-        }
-      }
-    }
-    if (value.type === 'spec' && patch.criteria) {
-      const verification = requirement.tasks.find((item) => item.type === 'verification')
-      if (verification && JSON.stringify(patch.criteria) !== JSON.stringify(task.criteria ?? []))
-        verification.checks = verification.checks
-          ?.filter((check) =>
-            patch.criteria!.some((criterion) => criterion.id === check.criterion_id),
-          )
-          .map((check) => ({ ...check, status: 'pending' }))
-    }
-    if (value.type === 'verification' && value.status === 'running') {
-      if (oldStatus === 'done')
-        value.checks = value.checks?.map((check) => ({ ...check, status: 'pending' }))
-      const criteria = requirement.tasks.find((item) => item.type === 'spec')?.criteria ?? []
-      value.checks = criteria.map(
-        (criterion) =>
-          value.checks?.find((check) => check.criterion_id === criterion.id) ?? {
-            criterion_id: criterion.id,
-            status: 'pending',
-            evidence: '',
-          },
-      )
-    }
-    log(value, action)
-    if (patch.status !== undefined && beforeId !== id) {
-      requirement.tasks = requirement.tasks.filter((item) => item.id !== id)
-      if (beforeId) {
-        const index = requirement.tasks.findIndex(
-          (item) => item.id === beforeId && item.status === value.status,
-        )
-        if (index < 0) throw new Error('目标位置已变化，请重试。')
-        requirement.tasks.splice(index, 0, value)
-      } else requirement.tasks.push(value)
-    }
-    await saveProjectFile(next, previous)
-    return structuredClone(data.tasks.find((item) => item.id === id)!)
+    if (!task?.queue) throw new Error('任务不存在。')
+    if (patch.status === 'done')
+      throw new Error('任务完成由 Agent 结果与 handoff 确认，不能手动跳过执行。')
+    await workflowService.taskAction(
+      id,
+      patch.status === 'running' ? 'start' : patch.status === 'todo' ? 'stop' : 'save',
+      { description: patch.description, agent_id: patch.agent_id },
+    )
+    await refreshWorkflow()
+    return structuredClone(data.tasks.find((task) => task.id === id)!)
+  },
+  async deleteTask(id: string) {
+    const task = data.tasks.find((task) => task.id === id)
+    if (!task?.queue) throw new Error('仅支持删除 Todo 队列任务。')
+    if (taskHasActiveAgent(task)) throw new Error('请先停止任务，等待执行结束后再删除。')
+    data.workflow = await workflowService.deleteTask(id)
+    applyProjects(projects)
+    publish()
   },
   async moveTask(id: string, status: TaskStatus, beforeId?: string) {
     if (id === beforeId) return
@@ -308,7 +263,6 @@ export const reinService = {
       id,
       { status },
       { todo: '移至待开始', running: '开始任务', done: '确认完成任务' }[status],
-      beforeId,
     )
   },
   async command(_taskId: string, _agentId: string, _command: string) {
@@ -361,7 +315,6 @@ export const reinService = {
       id,
       title: input.name.trim(),
       description: input.description.trim(),
-      tasks: existing?.tasks ?? [],
     }
     if (existing) next.requirements = next.requirements.map((r) => (r.id === id ? value : r))
     else next.requirements.push(value)
@@ -369,29 +322,14 @@ export const reinService = {
     return structuredClone(data.requirements.find((r) => r.id === id)!)
   },
   async saveAgent(value: AgentConfiguration, id?: string): Promise<Agent> {
-    if (id) throw new Error('请编辑 ~/.reind/agents 下的 Agent 配置文件。')
-    if (!['pi', 'codex'].includes(value.basic.provider)) throw new Error('请选择 Pi 或 Codex。')
-    await request('/api/agents', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: value.basic.name.trim(),
-        provider: value.basic.provider,
-        enabled: false,
-        a2a: value.a2a.enabled ? { url: value.a2a.endpoint.trim() } : null,
-        ...(!value.a2a.enabled
-          ? {
-              directory: value.local.workingDirectory.trim(),
-              executable: value.local.executable.trim() || null,
-              model:
-                value.local.model === '跟随 CLI 配置' ? null : value.local.model.trim() || null,
-            }
-          : {}),
-      }),
+    await request(id ? `/api/agents/${encodeURIComponent(id)}` : '/api/agents', {
+      method: id ? 'PUT' : 'POST',
+      body: JSON.stringify(value),
     })
     if (refresh) await refresh
     await refreshAgents()
-    const saved = data.agents.find((a) => a.name === value.basic.name.trim())
-    if (!saved) throw new Error('Agent 已创建，但列表刷新失败，请重试。')
+    const saved = data.agents.find((a) => a.name === value.name)
+    if (!saved) throw new Error('Agent 已保存，但列表刷新失败，请重试。')
     return structuredClone(saved)
   },
   async exportData() {

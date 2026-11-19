@@ -4,7 +4,6 @@ pub mod agents;
 pub mod daemon;
 pub mod execution;
 pub mod local;
-mod sdd;
 pub mod store;
 pub mod web;
 pub mod workflow;
