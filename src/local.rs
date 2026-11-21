@@ -1,8 +1,11 @@
 //! Standalone execution: editable configuration files and durable chat/event history.
+#[path = "local_forks.rs"]
+mod forks;
+
 use crate::{
     agents::{
         AgentConfig, AgentFiles, AgentType, Permissions,
-        type_config::{TypeConfigFile, TypeDefaults},
+        type_config::{TypeConfiguration, TypeDefaults},
     },
     execution::{
         Backend, ExecutionManager, LocalEvent, LocalRun,
@@ -130,17 +133,12 @@ impl LocalRuntime {
             operations: Default::default(),
             stopping: Default::default(),
         };
-        if let Ok(agents) = runtime.agents.list() {
-            for config in agents.into_iter().filter(|config| config.a2a.is_none()) {
-                if let Err(error) = runtime
-                    .agents
-                    .prepare_type(config.provider, config.native_config.as_deref())
-                {
-                    eprintln!(
-                        "reind: could not initialize {}'s type configuration: {error:#}",
-                        config.name
-                    );
-                }
+        for provider in [AgentType::Codex, AgentType::Pi] {
+            if let Err(error) = runtime.agents.initialize_type_config_mode(provider) {
+                eprintln!(
+                    "reind: could not initialize {} configuration: {error:#}",
+                    provider.name()
+                );
             }
         }
         let rows = sqlx::query("SELECT id,snapshot FROM local_runs WHERE json_extract(snapshot,'$.state') NOT IN ('completed','failed','cancelled')").fetch_all(&runtime.store.pool).await?;
@@ -161,15 +159,39 @@ impl LocalRuntime {
         config.enabled = false;
         config.validate()?;
         if config.a2a.is_none() {
-            self.agents
-                .prepare_type(config.provider, config.native_config.as_deref())?;
+            self.agents.prepare_type_directory(config.provider)?;
         }
         self.agents.add(&config)?;
         Ok(config)
     }
-    pub async fn type_configs(&self, provider: AgentType) -> Result<Vec<TypeConfigFile>> {
+    pub async fn type_configuration(&self, provider: AgentType) -> Result<TypeConfiguration> {
         let _guard = self.operations.lock().await;
-        self.agents.type_files(provider)
+        self.agents.type_configuration(provider)
+    }
+    pub async fn type_defaults(&self, provider: AgentType) -> Result<TypeDefaults> {
+        let _guard = self.operations.lock().await;
+        self.agents
+            .type_defaults(provider, self.agents.independent_config(provider)?)
+    }
+    pub async fn set_type_config_mode(
+        &self,
+        provider: AgentType,
+        independent: bool,
+    ) -> Result<TypeConfiguration> {
+        let _guard = self.operations.lock().await;
+        let source = if independent {
+            self.agents
+                .list()?
+                .into_iter()
+                .filter(|agent| agent.provider == provider && agent.a2a.is_none())
+                .filter_map(|agent| agent.native_config)
+                .find(|path| path.exists())
+        } else {
+            None
+        };
+        self.agents
+            .set_independent_config(provider, independent, source.as_deref())?;
+        self.agents.type_configuration(provider)
     }
     pub async fn update_type_config(
         &self,
@@ -179,6 +201,10 @@ impl LocalRuntime {
         previous: &str,
     ) -> Result<Option<TypeDefaults>> {
         let _guard = self.operations.lock().await;
+        ensure!(
+            self.agents.independent_config(provider)?,
+            "请先开启独立配置再编辑配置文件"
+        );
         let agents = self.agents.list()?;
         let active = self.active.lock().await;
         ensure!(
@@ -190,11 +216,7 @@ impl LocalRuntime {
         drop(active);
         self.agents
             .save_type_file(provider, name, content, previous)?;
-        Ok(self
-            .agents
-            .type_files(provider)
-            .ok()
-            .and_then(|files| self.agents.type_defaults(provider, &files).ok()))
+        Ok(self.agents.type_defaults(provider, true).ok())
     }
     pub async fn set_default_permissions(
         &self,
@@ -247,15 +269,32 @@ impl LocalRuntime {
         directory: Option<PathBuf>,
     ) -> Result<LocalRun> {
         let _guard = self.operations.lock().await;
+        self.start_in_directory_locked(agent_id, session_id, prompt, request_id, directory)
+            .await
+    }
+    fn validate_run_request(&self, prompt: &str, request_id: &str) -> Result<()> {
         ensure!(!self.stopping.load(Ordering::SeqCst), "daemon is stopping");
         ensure!(
             !prompt.trim().is_empty() && prompt.len() <= 48 * 1024,
             "prompt must contain 1–48 KiB"
         );
         ensure!(
-            Uuid::parse_str(&request_id).is_ok(),
+            Uuid::parse_str(request_id).is_ok(),
             "request_id must be a UUID"
         );
+        Ok(())
+    }
+    async fn start_in_directory_locked(
+        &self,
+        agent_id: String,
+        session_id: Option<String>,
+        prompt: String,
+        request_id: String,
+        directory: Option<PathBuf>,
+    ) -> Result<LocalRun> {
+        self.validate_run_request(&prompt, &request_id)?;
+        let fork_directory = self.fork_directory(session_id.as_deref()).await?;
+        let is_fork = fork_directory.is_some();
         if let Some(row) = sqlx::query(
             "SELECT agent_id,session_id,prompt,snapshot FROM local_runs WHERE request_id=?",
         )
@@ -274,7 +313,8 @@ impl LocalRuntime {
             return Ok(serde_json::from_str(row.get("snapshot"))?);
         }
         let mut config = self.agents.get(&agent_id)?;
-        let directory = directory
+        let directory = fork_directory
+            .or(directory)
             .map(|path| -> Result<PathBuf> {
                 ensure!(
                     path.is_absolute() && path.is_dir(),
@@ -321,10 +361,17 @@ impl LocalRuntime {
             })
             .transpose()?;
         let provider = config.provider.name();
-        let configuration = if managed_directory.is_some() {
-            format!("native:{provider}")
-        } else {
-            legacy_configuration.clone()
+        let independent_key = format!("native:{provider}");
+        let default_key = format!("{independent_key}:default");
+        let mut session_independent = config
+            .a2a
+            .is_none()
+            .then(|| self.agents.independent_config(config.provider))
+            .transpose()?;
+        let configuration = match session_independent {
+            Some(true) => &independent_key,
+            Some(false) => &default_key,
+            None => &legacy_configuration,
         };
         let session_id = session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         ensure!(
@@ -335,7 +382,6 @@ impl LocalRuntime {
             .bind(&session_id)
             .fetch_optional(&self.store.pool)
             .await?;
-        let mut use_managed = managed_directory.is_some();
         let (native_id, context_id) = if let Some(row) = &existing {
             ensure!(
                 row.get::<String, _>("agent_id") == agent_id,
@@ -347,11 +393,16 @@ impl LocalRuntime {
             );
             let saved_configuration = row.get::<String, _>("config_hash");
             let native_id = row.get::<Option<String>, _>("native_id");
-            if saved_configuration == legacy_configuration {
-                use_managed = false;
-            } else if saved_configuration != configuration
-                && Some(&saved_configuration) != managed_configuration.as_ref()
+            if config.a2a.is_none() && saved_configuration == default_key {
+                session_independent = Some(false);
+            } else if config.a2a.is_none()
+                && (saved_configuration == independent_key
+                    || Some(&saved_configuration) == managed_configuration.as_ref())
             {
+                session_independent = Some(true);
+            } else if saved_configuration == legacy_configuration {
+                session_independent = None;
+            } else {
                 // Older native sessions recorded their provider in the run and saved a config hash.
                 let same_native_provider = config.a2a.is_none()
                     && native_id.is_some()
@@ -367,6 +418,7 @@ impl LocalRuntime {
                     same_native_provider,
                     "conversation belongs to a different execution backend; start a new conversation"
                 );
+                session_independent = Some(true);
             }
             (native_id, row.get::<Option<String>, _>("context_id"))
         } else {
@@ -382,10 +434,13 @@ impl LocalRuntime {
             state: "dispatched".into(),
             cancel_requested: false,
             native_session_id: native_id.clone(),
+            native: Some(config.a2a.is_none()),
+            fork: is_fork,
             working_directory: None,
             last_sequence: 0,
             finished_at: None,
             error: None,
+            mentions: Default::default(),
         };
         let attempt = pb::AttemptRef {
             run_id: run.run_id.clone(),
@@ -400,15 +455,17 @@ impl LocalRuntime {
                 if config.permissions.is_none() {
                     config.permissions = Some(self.agents.default_permissions(config.provider)?);
                 }
-                if use_managed {
-                    config.native_config = Some(
-                        self.agents
-                            .prepare_type(config.provider, config.native_config.as_deref())?,
-                    );
+                if let Some(independent) = session_independent {
+                    config.native_config = independent
+                        .then(|| {
+                            self.agents
+                                .prepare_type(config.provider, config.native_config.as_deref())
+                        })
+                        .transpose()?;
                 }
-                config
-                    .directory
-                    .get_or_insert_with(|| self.agents.type_directory(config.provider));
+                if config.directory.is_none() {
+                    config.directory = Some(self.agents.prepare_type_directory(config.provider)?);
+                }
                 let options = config.native_options(&self.directory)?.resolve()?;
                 let directory = Some(fs::canonicalize(&options.agent.workspace)?);
                 let mut backend = NativeBackend::new(options);
@@ -554,6 +611,25 @@ impl LocalRuntime {
         if event.event["type"] == "error" {
             run.error = event.event["message"].as_str().map(String::from);
         }
+        if event.event["type"] == "text"
+            && event.event["complete"] == true
+            && event.event["reasoning"] != true
+            && let (Some(item), Some(text)) = (
+                event.event["item_id"].as_str(),
+                event.event["text"].as_str(),
+            )
+        {
+            let names = if text.contains('@') {
+                crate::chat::mention_names(text)
+            } else {
+                vec![]
+            };
+            if names.is_empty() {
+                run.mentions.remove(item);
+            } else {
+                run.mentions.insert(item.into(), names);
+            }
+        }
         stamp_finished(run)?;
         run.last_sequence = event.sequence;
         run.native_session_id = control.references().0;
@@ -634,7 +710,7 @@ impl LocalRuntime {
         Ok(terminal(&state) && self.ensure_idle(&agent).await.is_ok())
     }
     pub async fn history(&self, agent: &str, session: &str, before: &str) -> Result<Value> {
-        let sessions = sqlx::query("SELECT session_id,prompt,created_at FROM local_runs WHERE agent_id=? GROUP BY session_id HAVING rowid=MIN(rowid) ORDER BY MIN(rowid) DESC").bind(agent).fetch_all(&self.store.pool).await?;
+        let sessions = sqlx::query("SELECT session_id,prompt,created_at FROM local_runs WHERE agent_id=? AND NOT EXISTS (SELECT 1 FROM local_chat_forks WHERE id=local_runs.session_id) GROUP BY session_id HAVING rowid=MIN(rowid) ORDER BY MIN(rowid) DESC").bind(agent).fetch_all(&self.store.pool).await?;
         let session = if session.is_empty() {
             sessions
                 .first()

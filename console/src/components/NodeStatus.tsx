@@ -1,6 +1,15 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
 import { Tooltip } from '@mui/material'
 import {
+  AtSign,
   CircleAlert,
   CircleArrowRight,
   CircleCheck,
@@ -11,6 +20,15 @@ import {
 } from 'lucide-react'
 import { preferencesService } from '../services/preferences'
 import type { AppData } from '../types'
+import { taskMessagePreview } from '../services/workflow'
+import {
+  ChatMentionContext,
+  mentionsIn,
+  mentionsUser,
+  runMentionKey,
+  taskMentionKey,
+  useMentionReads,
+} from './chatMentions'
 
 const priority = [
   'waiting',
@@ -139,17 +157,55 @@ const NoticeContext = createContext<{
 
 export function NodeStatusProvider({
   data,
+  userName,
   viewedTaskId,
   viewedSpecId,
   children,
 }: {
   data: AppData
+  userName: string
   viewedTaskId?: string | null
   viewedSpecId?: string
   children: ReactNode
 }) {
   const { byScope, keys } = useMemo(() => collectNotices(data), [data])
-  const [seen, setSeen] = useState(preferencesService.readNodeNotices)
+  const [seen, setSeen] = useState(
+    () =>
+      new Set(
+        [...preferencesService.readNodeNotices()].filter((key) => !key.startsWith('mention:')),
+      ),
+  )
+  const dismiss = useCallback((key: string) => {
+    setSeen((previous) => (previous.has(key) ? previous : new Set(previous).add(key)))
+  }, [])
+  const {
+    seen: readMentions,
+    observed,
+    markRead,
+  } = useMentionReads(data.workflow?.read_chat_mentions)
+  const agents = useMemo(() => new Set(data.agents.map((agent) => agent.name)), [data.agents])
+  const unreadScopes = useMemo(() => {
+    const unread = new Set<string>()
+    for (const message of data.workflow?.messages ?? []) {
+      if (!message.content.includes('@') || readMentions.has(taskMentionKey(message.id))) continue
+      const { content } = taskMessagePreview(message, data.workflow)
+      if ([...mentionsIn(content)].some((match) => mentionsUser(match[1], userName))) {
+        unread.add(message.requirement_id)
+        if (message.spec_id) unread.add(message.spec_id)
+      }
+    }
+    for (const [scope, mentions] of Object.entries(data.workflow?.chat_mentions ?? {})) {
+      if (
+        mentions.some(
+          (mention) =>
+            !readMentions.has(runMentionKey(mention.run_id, mention.item_id)) &&
+            mention.names.some((name) => mentionsUser(name, userName)),
+        )
+      )
+        unread.add(scope)
+    }
+    return unread
+  }, [data.workflow, readMentions, userName])
   useEffect(() => {
     if (!data.workflow) return
     function syncSeen() {
@@ -181,11 +237,24 @@ export function NodeStatusProvider({
       value={{
         notices: byScope,
         seen,
-        dismiss: (key) => setSeen((previous) => new Set(previous).add(key)),
+        dismiss,
       }}
     >
-      {children}
+      <ChatMentionContext value={{ userName, agents, unreadScopes, seen: observed, markRead }}>
+        {children}
+      </ChatMentionContext>
     </NoticeContext>
+  )
+}
+
+export function NodeMention({ id }: { id: string }) {
+  if (!useContext(ChatMentionContext)?.unreadScopes.has(id)) return null
+  return (
+    <Tooltip title="有未读消息提到你">
+      <span className="node-mention icon" role="img" aria-label="有未读消息提到你">
+        <AtSign size={14} strokeWidth={1.75} aria-hidden="true" />
+      </span>
+    </Tooltip>
   )
 }
 

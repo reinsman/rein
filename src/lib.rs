@@ -1,6 +1,7 @@
 //! Shared local protocol for `rein` and `reind` (Unix only).
 
 pub mod agents;
+mod chat;
 pub mod daemon;
 pub mod execution;
 pub mod local;

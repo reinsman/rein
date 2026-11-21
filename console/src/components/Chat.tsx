@@ -6,6 +6,8 @@ import { AgentChat } from './AgentChat'
 import { useChatDraft } from './chatDraft'
 import { taskMessagePreview, workflowService, type Conversation } from '../services/workflow'
 import { HandoffLinks } from './HandoffLinks'
+import { ChatText } from './ChatContent'
+import { taskMentionKey } from './chatMentions'
 
 import { Action, AgentAvatar, ChatSendButton, Icon } from './shared'
 
@@ -18,6 +20,8 @@ interface Props {
   sendMode: string
   userName: string
   onSettings: () => void
+  canSplitChat: boolean
+  onForkVisibilityChange: (open: boolean) => void
 }
 export function Chat({
   data,
@@ -28,6 +32,8 @@ export function Chat({
   sendMode,
   userName,
   onSettings,
+  canSplitChat,
+  onForkVisibilityChange,
 }: Props) {
   const mainAgent = data.agents.find((agent) => agent.id === data.workflow?.settings.main_agent)
   const mainAgentId = mainAgent?.id
@@ -70,7 +76,7 @@ export function Chat({
             hour: '2-digit',
             minute: '2-digit',
           }),
-          content: content.replaceAll('@用户', `@${userName}`),
+          content,
           preview,
           kind: message.kind,
           taskIds: [message.task_id],
@@ -126,6 +132,8 @@ export function Chat({
         agent={selectedAgent}
         userName={userName}
         sendMode={sendMode}
+        canSplitChat={canSplitChat}
+        onForkVisibilityChange={onForkVisibilityChange}
       />
     )
   if (scope.requirementId && mainAgent)
@@ -144,6 +152,8 @@ export function Chat({
         agent={mainAgent}
         userName={userName}
         sendMode={sendMode}
+        canSplitChat={canSplitChat}
+        onForkVisibilityChange={onForkVisibilityChange}
         onSettings={onSettings}
       />
     ) : (
@@ -216,13 +226,14 @@ export function Chat({
               key={message.id}
               data-task-message={message.kind}
             >
-              {!own && <AgentAvatar agent={agent} runtime={message.kind !== undefined} />}
+              <AgentAvatar agent={own ? undefined : agent} runtime={message.kind !== undefined} />
               <div className="message-content">
                 <div className="message-author">
                   {own ? (
-                    <span>
-                      {userName}　{message.time}
-                    </span>
+                    <>
+                      <strong>{userName}</strong>
+                      <time>{message.time}</time>
+                    </>
                   ) : (
                     <>
                       <strong>
@@ -242,9 +253,14 @@ export function Chat({
                 <div className="message-bubble-row">
                   <Paper
                     elevation={0}
-                    className={`message-bubble ${message.execution ? 'with-execution' : ''} ${message.execution === 'waiting' ? 'waiting-message' : ''}`}
+                    className={`message-bubble${message.execution ? ' with-execution' : ''}`}
                   >
-                    <span>{message.content}</span>
+                    <span>
+                      <ChatText
+                        text={message.content}
+                        receipt={message.kind ? taskMentionKey(message.id) : undefined}
+                      />
+                    </span>
                     {message.execution === 'waiting' && (
                       <ButtonBase
                         className="message-state waiting"
@@ -261,7 +277,6 @@ export function Chat({
                       </span>
                     )}
                   </Paper>
-                  {own && <AgentAvatar />}
                 </div>
                 {message.preview && <HandoffLinks {...message.preview} />}
                 {message.taskIds && (

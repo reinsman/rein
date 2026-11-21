@@ -12,19 +12,33 @@ test('system settings edit shared native config and keep orchestration separate'
   const defaults = panel.getByRole('region', { name: '类型默认值' })
   const codex = panel.getByRole('textbox', { name: 'config.toml', exact: true })
   const save = panel.getByRole('button', { name: '保存配置', exact: true })
-  const permissions = panel.getByRole('combobox', { name: '默认权限', exact: true })
+  const permissions = panel.getByRole('combobox', { name: '默认权限模式', exact: true })
   const loginNote = panel.getByRole('note', { name: 'Codex 登录说明' })
-  await expect(loginNote).toContainText('首次使用需单独登录')
+  const mode = panel.getByRole('switch', { name: '独立配置', exact: true })
+  const configPath = panel.locator('.agent-type-file code')
+  await expect(mode).not.toBeChecked()
+  await expect(panel.getByRole('note', { name: '切换配置影响' })).toContainText('只影响新会话')
+  await expect(loginNote).toHaveCount(0)
+  await expect(configPath).toHaveCount(0)
+  await expect(codex).toHaveCount(0)
   await expect(permissions).toHaveValue('full_access')
+  await expect(permissions.getByRole('option')).toHaveText([
+    '请求审批 Ask for approval',
+    '帮我审批 Approve for me',
+    '完全访问 Full access',
+  ])
+  await permissions.selectOption('approve_for_me')
+  await panel.getByRole('button', { name: '保存默认权限', exact: true }).click()
+  await expect(permissions).toBeEnabled()
+  await expect(permissions).toHaveValue('approve_for_me')
+  await mode.click()
+  await expect(mode).toBeChecked()
+  await expect(loginNote).toContainText('首次使用需单独登录')
   await expect(loginNote.locator('code')).toHaveText(
     /env CODEX_HOME='.+\/agents\/codex' codex login/,
   )
-  await permissions.selectOption('read_only')
-  await panel.getByRole('button', { name: '保存默认权限', exact: true }).click()
-  await expect(permissions).toBeEnabled()
-  await expect(permissions).toHaveValue('read_only')
-  await expect(codex).toBeHidden()
-  await panel.getByText('配置文件', { exact: true }).click()
+  await expect(configPath).toHaveText(/\/agents\/codex\/config\.toml$/)
+  await expect(panel.locator('.agent-type-editor-disclosure')).toHaveCSS('border-top-width', '0px')
   await expect(codex).toBeVisible()
   const original = await codex.inputValue()
   await codex.fill('malformed [')
@@ -41,9 +55,12 @@ test('system settings edit shared native config and keep orchestration separate'
     .toBe(changed)
   const provider = panel.getByRole('combobox', { name: 'Agent 类型', exact: true })
   await provider.selectOption('pi')
+  await expect(mode).not.toBeChecked()
   await expect(loginNote).toHaveCount(0)
-  await expect(panel.getByText('原生完全访问', { exact: true })).toBeVisible()
+  await expect(panel.getByText('完全访问 Full access', { exact: true })).toBeVisible()
   await expect(permissions).toHaveCount(0)
+  await mode.click()
+  await expect(mode).toBeChecked()
   await expect(panel.getByRole('textbox', { name: 'models.json', exact: true })).toBeVisible()
   await panel
     .getByRole('combobox', { name: '配置文件', exact: true })
@@ -51,8 +68,14 @@ test('system settings edit shared native config and keep orchestration separate'
   await expect(panel.getByRole('textbox', { name: 'settings.json', exact: true })).toBeVisible()
   await provider.selectOption('codex')
   await expect(codex).toHaveValue(changed)
-  await expect(permissions).toHaveValue('read_only')
-  await panel.getByText('配置文件', { exact: true }).click()
+  await expect(permissions).toHaveValue('approve_for_me')
+  await mode.click()
+  await expect(mode).not.toBeChecked()
+  await expect(codex).toHaveCount(0)
+  await expect(configPath).toHaveCount(0)
+  expect((await (await request.get('/api/agent-types/codex')).json()).files).toEqual([])
+  await mode.click()
+  await expect(codex).toHaveValue(changed)
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 })
     await page.waitForTimeout(250)
@@ -71,13 +94,15 @@ test('system settings edit shared native config and keep orchestration separate'
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.getByRole('button', { name: 'codex设置', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Agent 设置 · codex' })
-  const access = dialog.getByRole('combobox', { name: '访问级别', exact: true })
+  const access = dialog.getByRole('combobox', { name: '权限模式', exact: true })
   const openPermissions = () =>
     dialog.getByRole('button', { name: '权限配置', exact: true }).click()
   const saveAgent = () => dialog.getByRole('button', { name: '保存配置', exact: true }).click()
   await openPermissions()
   await expect(access).toHaveValue('')
-  await expect(dialog.getByText('类型默认值 · 只读', { exact: true })).toBeVisible()
+  await expect(
+    dialog.getByText('类型默认值 · 帮我审批 Approve for me', { exact: true }),
+  ).toBeVisible()
   await access.selectOption('full_access')
   await saveAgent()
   await expect(dialog).toBeHidden()
@@ -120,4 +145,13 @@ test('system settings edit shared native config and keep orchestration separate'
       })
     ).ok(),
   ).toBeTruthy()
+  for (const provider of ['codex', 'pi']) {
+    expect(
+      (
+        await request.put(`/api/agent-types/${provider}/config-mode`, {
+          data: { independent: false },
+        })
+      ).ok(),
+    ).toBeTruthy()
+  }
 })

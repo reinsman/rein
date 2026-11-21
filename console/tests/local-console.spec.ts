@@ -116,6 +116,61 @@ test('original shell, project tree and task board persist without workspace or p
   expect(errors).toEqual([])
 })
 
+test('sidebar rosters collapse toward the account and connection settings are placeholders', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+  const sidebar = page.getByRole('complementary', { name: '项目导航' })
+  const connections = sidebar.getByRole('button', { name: '连接', exact: true })
+  const agents = sidebar.getByRole('button', { name: 'Agents', exact: true })
+  const account = sidebar.getByRole('button', { name: '个人菜单' })
+  const list = sidebar.getByRole('list', { name: '连接器' })
+  const github = list.getByRole('listitem').filter({ hasText: 'GitHub' })
+  const gear = github.getByRole('button', { name: 'GitHub设置' })
+  const top = async (locator: typeof agents) => (await locator.boundingBox())!.y
+
+  await expect(sidebar.getByRole('button', { name: '与codex对话', exact: true })).toBeVisible()
+  await expect
+    .poll(() =>
+      list.locator('.connection-row > img').evaluateAll((icons) =>
+        icons.map((icon) => (icon as HTMLImageElement).naturalWidth > 0),
+      ),
+    )
+    .toEqual([true, true])
+  await account.hover()
+  await expect(gear).toHaveCSS('opacity', '0')
+  await github.hover()
+  await expect(gear).toHaveCSS('opacity', '0.6')
+  await expect(list.getByRole('button', { name: 'ONES设置' })).toHaveCSS('opacity', '0')
+  await gear.click()
+  await expect(page.getByRole('alert').filter({ hasText: '正在设计' })).toBeVisible()
+
+  const expandedAgentsTop = await top(agents)
+  const expandedConnectionsTop = await top(connections)
+  const accountTop = await top(account)
+  await agents.click()
+  await expect(agents).toHaveAttribute('aria-expanded', 'false')
+  await expect(sidebar.getByRole('button', { name: '与codex对话', exact: true })).toBeHidden()
+  expect(await top(agents)).toBeGreaterThan(expandedAgentsTop)
+  expect(await top(connections)).toBeGreaterThan(expandedConnectionsTop)
+  const beforeCollapsingConnections = await top(connections)
+  await connections.press('Enter')
+  await expect(connections).toHaveAttribute('aria-expanded', 'false')
+  await expect(list).toBeHidden()
+  expect(await top(connections)).toBeGreaterThan(beforeCollapsingConnections)
+  expect(await top(connections)).toBeLessThan(await top(agents))
+  expect(await top(account)).toBe(accountTop)
+  await expect(sidebar.getByRole('button', { name: '新建连接' })).toBeVisible()
+  await expect(sidebar.getByRole('button', { name: '新建 Agent' })).toBeVisible()
+
+  await agents.click()
+  await expect(sidebar.getByRole('button', { name: '与codex对话', exact: true })).toBeVisible()
+  await expect(list).toBeHidden()
+  await connections.click()
+  await expect(list.getByText('ONES', { exact: true })).toBeVisible()
+})
+
 test('chat content fits the shared minimum pane width and grows when resized', async ({ page }) => {
   const row = '|' + ' W |'.repeat(32)
   const answer = [row, '|' + ' --- |'.repeat(32), row, '', '![结果图](/wide-result.svg)'].join('\n')
@@ -237,6 +292,22 @@ test('original Agent chat supports streaming, history and approval', async ({ pa
     await page.setViewportSize(viewport)
     const bubble = page.locator('.message.own .message-bubble')
     await expect(bubble.locator('span')).toHaveText('hello')
+    const insets = await page.getByRole('log').evaluate((log) => {
+      const edges = (message: string, body: string, own: boolean) => {
+        const row = log.querySelector(message)!
+        const outer = row.getBoundingClientRect()
+        return [':scope > .MuiAvatar-root', '.message-author', body].map((selector) => {
+          const item = row.querySelector(selector)!.getBoundingClientRect()
+          return own ? outer.right - item.right : item.left - outer.left
+        })
+      }
+      return {
+        user: edges('.message.own', '.message-bubble', true),
+        agent: edges('.message.agent-message', '.hub-final-answer', false),
+      }
+    })
+    expect(insets.user).toEqual(insets.agent)
+    expect(insets.user[0]).toBe(0)
     const space = await bubble.evaluate((element) => {
       const style = getComputedStyle(element)
       const text = element.querySelector('span')!
@@ -899,13 +970,14 @@ test('per-Agent settings persist permissions, model, effort and skill selection'
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('textbox', { name: '名称', exact: true })).toBeDisabled()
   await dialog.getByRole('button', { name: '权限配置', exact: true }).click()
-  await expect(dialog.getByRole('combobox', { name: '访问级别' })).toHaveValue('')
+  const permissions = dialog.getByRole('combobox', { name: '权限模式' })
+  await expect(permissions).toHaveValue('')
   await expect(page.locator('.agent-config-dialog .MuiDialog-container')).toHaveCSS('opacity', '1')
   await page.screenshot({
     path: '.impeccable/review/agent-settings-desktop.png',
     animations: 'disabled',
   })
-  await dialog.getByRole('combobox', { name: '访问级别' }).selectOption('read_only')
+  await permissions.selectOption('approve_for_me')
   await dialog.getByRole('button', { name: '模型与思考', exact: true }).click()
   await dialog.getByRole('textbox', { name: '模型覆盖' }).fill('custom-model')
   await expect(dialog.getByText('此 Agent 独立设置', { exact: true }).first()).toBeVisible()
@@ -915,7 +987,7 @@ test('per-Agent settings persist permissions, model, effort and skill selection'
   await page.reload()
   await page.getByRole('button', { name: 'settings-helper设置', exact: true }).click()
   await dialog.getByRole('button', { name: '权限配置', exact: true }).click()
-  await expect(dialog.getByRole('combobox', { name: '访问级别' })).toHaveValue('read_only')
+  await expect(permissions).toHaveValue('approve_for_me')
   await dialog.getByRole('button', { name: '模型与思考', exact: true }).click()
   await expect(dialog.getByRole('textbox', { name: '模型覆盖' })).toHaveValue('custom-model')
   await expect(dialog.getByRole('combobox', { name: '思考强度' })).toHaveValue('high')
@@ -934,7 +1006,7 @@ test('per-Agent settings persist permissions, model, effort and skill selection'
   await expect(dialog).toBeHidden()
   const updated = (await (await request.get('/api/agents')).json()).agents
   const saved = updated.find((agent: { name: string }) => agent.name === 'settings-helper')
-  expect(saved.permissions).toBe('read_only')
+  expect(saved.permissions).toBe('approve_for_me')
   expect(saved.disabled_skills).toHaveLength(1)
   expect(saved.native_config).toBe(base.native_config)
   expect(saved.executable).toBe(base.executable)

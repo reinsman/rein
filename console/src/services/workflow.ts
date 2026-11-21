@@ -81,6 +81,8 @@ export interface QueueTask {
   directory: string
 }
 export interface WorkflowSnapshot {
+  chat_mentions?: Record<string, { run_id: string; item_id: string; names: string[] }[]>
+  read_chat_mentions?: string[]
   execution_states?: Record<string, string[]>
   execution_runs?: Record<string, { id: string; state: string; interaction_id?: string | null }[]>
   ready_spec_ids?: string[]
@@ -153,6 +155,11 @@ export const workflowService = {
     }
   },
   snapshot: (signal?: AbortSignal) => request<WorkflowSnapshot>('/api/workflow', { signal }),
+  readChatMentions: (keys: string[]) =>
+    request<{ keys: string[] }>('/api/workflow/chat-mentions/read', {
+      method: 'POST',
+      body: JSON.stringify(keys),
+    }),
   settings: (settings: WorkflowSettings) =>
     request<WorkflowSnapshot>('/api/workflow/settings', {
       method: 'POST',

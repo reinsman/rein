@@ -139,6 +139,71 @@ def workflow_artifacts(prompt, cancel):
 
 fixture = Path(__file__).resolve().parents[3] / "a2alinker/crates/a2alinker/tests/fixtures/fake_agent.py"
 source = fixture.read_text()
+fork_helpers = '''def thread_file(thread):
+    return HOME / ("fixture-" + thread + ".json")
+
+def thread_history(thread):
+    path = thread_file(thread)
+    return json.loads(path.read_text()) if path.exists() else {"turns": 0, "history": []}
+
+def count_turn():
+    if PI:
+        counter = SESSION.with_suffix(".count")
+        count = int(counter.read_text()) if counter.exists() else (
+            sum(json.loads(line).get("message", {}).get("role") == "user"
+                for line in SESSION.read_text().splitlines()) if SESSION.exists() else 0)
+        counter.parent.mkdir(parents=True, exist_ok=True)
+        counter.write_text(str(count + 1))
+        if not SESSION.exists():
+            SESSION.write_text(json.dumps({"type": "session", "id": str(uuid.uuid4()),
+                "version": 3, "cwd": os.getcwd()}) + "\\n")
+        return count + 1
+    data = thread_history(THREAD)
+    data.setdefault("cwd", os.getcwd())
+    data["turns"] += 1
+    thread_file(THREAD).parent.mkdir(parents=True, exist_ok=True)
+    thread_file(THREAD).write_text(json.dumps(data))
+    return data["turns"]
+
+def save_fork_turn(prompt, text, item):
+    if not PI:
+        data = thread_history(THREAD)
+        data["history"].append({"id": TURN, "status": "completed", "items": [
+            {"type": "agentMessage", "id": item, "text": text}]})
+        thread_file(THREAD).write_text(json.dumps(data))
+        return
+    entries = [json.loads(line) for line in SESSION.read_text().splitlines()] if SESSION.exists() else [
+        {"type": "session", "id": str(uuid.uuid4()), "version": 3, "cwd": os.getcwd()}]
+    parent = entries[-1]["id"] if len(entries) > 1 else None
+    for role, content in [("user", prompt), ("assistant", text)]:
+        entry_id = str(uuid.uuid4())
+        entries.append({"type": "message", "id": entry_id, "parentId": parent,
+            "message": {"role": role, "content": [{"type": "text", "text": content}],
+                "timestamp": int(time.time() * 1000)}})
+        parent = entry_id
+    SESSION.write_text("\\n".join(json.dumps(entry) for entry in entries) + "\\n")
+
+'''
+source = source.replace('def count_turn():', 'def original_count_turn():', 1)
+source = source.replace('def finish(', fork_helpers + 'def finish(', 1)
+source = source.replace(
+    '    elif method in ("thread/start", "thread/resume"):',
+    '''    elif method == "thread/read":
+        thread = request["params"]["threadId"]
+        response(request, {"thread": {"id": thread, "cwd": thread_history(thread)["cwd"]}})
+    elif method == "thread/turns/list":
+        history = thread_history(request["params"]["threadId"])["history"]
+        response(request, {"data": list(reversed(history))[:request["params"].get("limit", 10)]})
+    elif method == "thread/fork":
+        params = request["params"]
+        history = thread_history(params["threadId"])["history"]
+        stop = next(i for i, turn in enumerate(history) if turn["id"] == params["lastTurnId"]) + 1
+        new_thread = "fork-" + str(uuid.uuid4())
+        thread_file(new_thread).write_text(json.dumps({"turns": stop, "history": history[:stop]}))
+        response(request, {"thread": {"id": new_thread}})
+    elif method in ("thread/start", "thread/resume"):''',
+    1,
+)
 marker = "def run(prompt, count):\n"
 assert source.count(marker) == 1
 source = source.replace(marker, marker + "    if not workflow_artifacts(prompt, CANCEL):\n        finish(canceled=True)\n        return\n    if prompt.startswith('REIN TASK RUNTIME') and (Path(json.loads(prompt.rsplit('ARTIFACT_OUTPUT_JSON: ', 1)[1])['result']).parent / 'require-approval').exists():\n        prompt = 'approval'\n    if prompt.startswith('REIN SPEC TASK UPDATE') and (Path(json.loads(prompt.rsplit('TASK_UPDATE_JSON: ', 1)[1])['tasks_file']).parent / 'require-document-approval').exists():\n        prompt = 'approval'\n")
@@ -161,4 +226,18 @@ question_fixture = """    if prompt == "questions":
                 return
 """
 source = source.replace('    if prompt == "approval":', question_fixture + '    if prompt == "approval":')
+source = source.replace(
+    '    item = "message-" + str(count)',
+    '''    if prompt.endswith("\\nUSER MESSAGE:\\nfixture-chat-references"):
+        directory = Path.cwd()
+        text = (
+            f"@Haibin 与 @codex，请看 [清单](file://{directory}/src/preview.txt#L2)。\\n\\n"
+            f"相对位置：src/preview.txt:2。\\n\\n"
+            f"[目录外]({directory.parent}/secret-outside.txt) · [符号链接](src/linked.txt)\\n\\n"
+            "\\u0060@code\\u0060，email@Haibin.example"
+        )
+    item = "message-" + str(count)''',
+)
+source = source.replace('    item = "message-" + str(count)\n',
+    '    item = "message-" + str(count)\n    save_fork_turn(prompt, text, item)\n', 1)
 exec(compile(source, str(fixture), "exec"), {"__name__": "__main__", "__file__": str(fixture), "workflow_artifacts": workflow_artifacts, "Path": Path})

@@ -8,6 +8,9 @@ export type AgentRun = {
   sessionId: string
   agentId: string
   workingDirectory?: string
+  canPreviewFiles?: boolean
+  canFork?: boolean
+  fork?: boolean
   state: string
   cancelRequested: boolean
   finishedAt?: number | null
@@ -55,6 +58,13 @@ export type HistoryPage = {
   next_cursor: string
   stream_cursor: string
 }
+export type ChatFork = {
+  id: string
+  source_session_id: string
+  source_run_id: string
+  title: string | null
+  message_count: number
+}
 
 interface LocalRun {
   run_id: string
@@ -62,6 +72,9 @@ interface LocalRun {
   session_id: string
   state: string
   working_directory?: string
+  native?: boolean
+  fork?: boolean
+  native_session_id?: string | null
   cancel_requested: boolean
   last_sequence: number
   finished_at?: number | null
@@ -84,6 +97,10 @@ function toRun(run: LocalRun, agentId: string): AgentRun {
     sessionId: run.session_id,
     agentId,
     workingDirectory: run.working_directory,
+    canPreviewFiles: !!run.working_directory && (run.native ?? !!run.native_session_id),
+    canFork:
+      run.state === 'completed' && run.native !== false && !!run.native_session_id && !run.fork,
+    fork: run.fork,
     state: stateName(run.state),
     cancelRequested: run.cancel_requested,
     finishedAt: run.finished_at,
@@ -195,6 +212,24 @@ export const localService = {
   stream(agent: string, _cursor: string) {
     return new EventSource(`/api/agents/${encodeURIComponent(agent)}/events`)
   },
+  chatForks: (session: string, signal?: AbortSignal) =>
+    request<ChatFork[]>(`/api/sessions/${encodeURIComponent(session)}/forks`, { signal }),
+  async submitFork(agent: string, source: string, prompt: string, request_id: string) {
+    const { fork, run } = await request<{ fork: ChatFork; run: LocalRun }>(
+      `/api/runs/${encodeURIComponent(source)}/fork`,
+      { method: 'POST', body: JSON.stringify({ prompt, request_id }) },
+    )
+    return { fork, run: toRun(run, agent) }
+  },
+  async forkContext(source: string, before: number | null, signal: AbortSignal) {
+    const page = await request<{ runs: LocalRecord[]; next: number | null }>(
+      `/api/runs/${encodeURIComponent(source)}/fork-context${before === null ? '' : `?before=${before}`}`,
+      { signal },
+    )
+    return { runs: page.runs.map(toUpdate), next: page.next }
+  },
+  deleteFork: (id: string) =>
+    request(`/api/chat-forks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   async create(agent_id: string, session_id: string, prompt: string, request_id: string) {
     const { run } = await request<{ run: LocalRun }>('/api/runs', {
       method: 'POST',

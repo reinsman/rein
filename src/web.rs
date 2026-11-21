@@ -76,6 +76,10 @@ pub fn router(
         .route("/api/agent-types/{provider}", get(type_configs))
         .route("/api/agent-types/{provider}/defaults", get(type_defaults))
         .route(
+            "/api/agent-types/{provider}/config-mode",
+            axum::routing::put(set_type_config_mode),
+        )
+        .route(
             "/api/agent-types/{provider}/permissions",
             axum::routing::put(set_default_permissions),
         )
@@ -97,12 +101,21 @@ pub fn router(
         .route("/api/events", get(state_events))
         .route("/api/runs", post(create_run))
         .route("/api/runs/{id}", get(run))
+        .route("/api/runs/{id}/fork", post(create_chat_fork))
+        .route("/api/sessions/{id}/forks", get(chat_forks))
+        .route("/api/runs/{id}/fork-context", get(chat_fork_context))
+        .route(
+            "/api/chat-forks/{id}",
+            axum::routing::delete(delete_chat_fork),
+        )
+        .route("/api/runs/{id}/file", post(run_file))
         .route("/api/runs/{id}/followup-ready", get(followup_ready))
         .route("/api/runs/{id}/cancel", post(cancel))
         .route("/api/runs/{id}/reply", post(reply))
         .route("/api/runs/{id}/instruction", post(instruction))
         .route("/api/projects", get(projects).post(save_project))
         .route("/api/workflow", get(workflow_snapshot))
+        .route("/api/workflow/chat-mentions/read", post(read_chat_mentions))
         .route("/api/workflow/settings", post(workflow_settings))
         .route("/api/specs", post(create_spec))
         .route("/api/specs/{id}/action", post(spec_action))
@@ -191,7 +204,98 @@ async fn workflow_view(s: &WebState) -> Result<Value> {
     view["ready_spec_ids"] = json!(ready_specs);
     view["execution_states"] = json!(states);
     view["execution_runs"] = json!(executions);
+    view["chat_mentions"] = json!(chat_mentions(s, &snapshot, &sessions).await?);
+    let read_mentions: Vec<String> =
+        sqlx::query_scalar("SELECT message_key FROM chat_mention_reads ORDER BY message_key")
+            .fetch_all(&s.local.store.pool)
+            .await?;
+    view["read_chat_mentions"] = json!(read_mentions);
     Ok(view)
+}
+
+async fn read_chat_mentions(State(s): State<WebState>, Json(keys): Json<Vec<String>>) -> ApiResult {
+    if keys.len() > 128 {
+        return Err(anyhow::anyhow!("每次最多标记 128 条消息").into());
+    }
+    let keys = keys
+        .iter()
+        .filter(|key| {
+            let Some(parts) = key
+                .strip_prefix("mention:")
+                .filter(|value| value.len() <= 4096)
+                .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+            else {
+                return false;
+            };
+            matches!(parts.as_slice(), [kind, run, item] if kind == "run" && !run.is_empty() && !item.is_empty())
+                || matches!(parts.as_slice(), [kind, id] if kind == "task-message" && !id.is_empty())
+        })
+        .collect::<Vec<_>>();
+    sqlx::query(
+        "INSERT OR IGNORE INTO chat_mention_reads (message_key) SELECT value FROM json_each(?)",
+    )
+    .bind(serde_json::to_string(&keys).map_err(anyhow::Error::from)?)
+    .execute(&s.local.store.pool)
+    .await
+    .map_err(anyhow::Error::from)?;
+    Ok(Json(json!({"keys":keys})))
+}
+
+async fn chat_mentions(
+    s: &WebState,
+    snapshot: &crate::workflow::Snapshot,
+    conversations: &HashMap<&String, &String>,
+) -> Result<std::collections::BTreeMap<String, Vec<Value>>> {
+    let mut scopes: HashMap<String, Vec<&str>> = conversations
+        .iter()
+        .map(|(session, scope)| ((*session).clone(), vec![scope.as_str()]))
+        .collect();
+    let tasks: HashMap<_, _> = snapshot
+        .tasks
+        .iter()
+        .filter_map(|task| Some((task.run_id.as_ref().or(task.last_run_id.as_ref())?, task)))
+        .collect();
+    if !tasks.is_empty() {
+        let task_sessions: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id,session_id FROM local_runs WHERE id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(serde_json::to_string(&tasks.keys().collect::<Vec<_>>())?)
+        .fetch_all(&s.local.store.pool)
+        .await?;
+        for (id, session) in task_sessions {
+            if let Some(task) = tasks.get(&id) {
+                let recipients = scopes.entry(session).or_default();
+                recipients.push(&task.requirement_id);
+                recipients.extend(task.spec_id.as_deref());
+            }
+        }
+    }
+    let mut output = std::collections::BTreeMap::<_, Vec<_>>::new();
+    if scopes.is_empty() {
+        return Ok(output);
+    }
+    let runs: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT id,session_id,json_extract(snapshot,'$.mentions') FROM local_runs
+         WHERE session_id IN (SELECT value FROM json_each(?))
+           AND json_type(snapshot,'$.mentions')='object'
+         ORDER BY rowid",
+    )
+    .bind(serde_json::to_string(&scopes.keys().collect::<Vec<_>>())?)
+    .fetch_all(&s.local.store.pool)
+    .await?;
+    for (run_id, session, mentions) in runs {
+        let mentions: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_str(&mentions)?;
+        if let Some(recipients) = scopes.get(&session) {
+            for (item_id, names) in mentions {
+                let entry = json!({"run_id":run_id,"item_id":item_id,"names":names});
+                for &scope in recipients {
+                    output.entry(scope.into()).or_default().push(entry.clone());
+                }
+            }
+        }
+    }
+    Ok(output)
 }
 async fn requirement_conversation(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!(s.workflow.conversation(&id).await?)))
@@ -406,14 +510,26 @@ async fn agents(State(s): State<WebState>) -> ApiResult {
     Ok(Json(json!({"agents":agent_views(&s.local)?})))
 }
 async fn type_configs(State(s): State<WebState>, Path(provider): Path<AgentType>) -> ApiResult {
-    let files = s.local.type_configs(provider).await?;
-    Ok(Json(
-        json!({"defaults": s.local.agents.type_defaults(provider, &files).ok(), "files": files}),
-    ))
+    Ok(Json(json!(s.local.type_configuration(provider).await?)))
 }
 async fn type_defaults(State(s): State<WebState>, Path(provider): Path<AgentType>) -> ApiResult {
-    let files = s.local.type_configs(provider).await?;
-    Ok(Json(json!(s.local.agents.type_defaults(provider, &files)?)))
+    Ok(Json(json!(s.local.type_defaults(provider).await?)))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypeConfigModeEdit {
+    independent: bool,
+}
+async fn set_type_config_mode(
+    State(s): State<WebState>,
+    Path(provider): Path<AgentType>,
+    Json(edit): Json<TypeConfigModeEdit>,
+) -> ApiResult {
+    Ok(Json(json!(
+        s.local
+            .set_type_config_mode(provider, edit.independent)
+            .await?
+    )))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -551,6 +667,79 @@ async fn run(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
     Ok(Json(
         serde_json::to_value(s.local.get(&id, 0).await?).map_err(anyhow::Error::from)?,
     ))
+}
+
+async fn chat_forks(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!(s.local.chat_forks(&id).await?)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubmitChatFork {
+    prompt: String,
+    request_id: String,
+}
+
+async fn create_chat_fork(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(body): Json<SubmitChatFork>,
+) -> ApiResult {
+    let (fork, run) = s
+        .local
+        .submit_chat_fork(&id, body.prompt, body.request_id)
+        .await?;
+    Ok(Json(json!({"fork":fork,"run":run})))
+}
+
+#[derive(Deserialize)]
+struct ForkContextQuery {
+    before: Option<i64>,
+}
+
+async fn chat_fork_context(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Query(query): Query<ForkContextQuery>,
+) -> ApiResult {
+    let (runs, next) = s.local.fork_context(&id, query.before).await?;
+    Ok(Json(json!({"runs":runs,"next":next})))
+}
+
+async fn delete_chat_fork(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
+    s.local.delete_chat_fork(&id).await?;
+    Ok(Json(json!({"deleted": true})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunFile {
+    path: std::path::PathBuf,
+}
+
+async fn run_file(
+    State(s): State<WebState>,
+    Path(id): Path<String>,
+    Json(file): Json<RunFile>,
+) -> ApiResult {
+    let snapshot: String = sqlx::query_scalar("SELECT snapshot FROM local_runs WHERE id=?")
+        .bind(id)
+        .fetch_optional(&s.local.store.pool)
+        .await
+        .map_err(anyhow::Error::from)?
+        .context("执行记录不存在")?;
+    let run: crate::execution::LocalRun =
+        serde_json::from_str(&snapshot).map_err(anyhow::Error::from)?;
+    run.native
+        .unwrap_or_else(|| run.native_session_id.is_some())
+        .then_some(())
+        .context("该执行记录无法预览本地文件")?;
+    let directory = run.working_directory.context("该执行记录没有工作目录")?;
+    let content =
+        tokio::task::spawn_blocking(move || crate::chat::preview_file(&directory, &file.path))
+            .await
+            .map_err(anyhow::Error::from)??;
+    Ok(Json(json!({"content":content})))
 }
 async fn followup_ready(State(s): State<WebState>, Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!({"ready":s.local.followup_ready(&id).await?})))

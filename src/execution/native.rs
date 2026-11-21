@@ -38,6 +38,8 @@ pub struct NativeRunOptions {
     #[serde(default)]
     pub approval_policy: Option<String>,
     #[serde(default)]
+    pub approvals_reviewer: Option<String>,
+    #[serde(default)]
     pub skill_directories: Vec<PathBuf>,
     #[serde(default)]
     pub only_explicit_skills: bool,
@@ -55,6 +57,7 @@ impl NativeRunOptions {
         options.agent.args = self.args;
         options.agent.sandbox = self.sandbox;
         options.agent.approval_policy = self.approval_policy;
+        options.agent.approvals_reviewer = self.approvals_reviewer;
         options.skills.directories = self.skill_directories;
         options.skills.only_explicit = self.only_explicit_skills;
         options.resolve()?;

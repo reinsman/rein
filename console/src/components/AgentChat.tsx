@@ -1,21 +1,33 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
   FormControlLabel,
   InputAdornment,
   InputBase,
+  IconButton,
   Paper,
   Popover,
   Radio,
   RadioGroup,
   TextField,
+  Tooltip,
 } from '@mui/material'
-import { Check, ChevronLeft, ChevronRight, Copy, History, Plus, Search } from 'lucide-react'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  GitFork,
+  History,
+  Plus,
+  Search,
+} from 'lucide-react'
 import type {
   Agent,
   AgentEvent,
   AgentRun,
+  ChatFork,
   HistoryPage,
   RunRecord,
   RunUpdate,
@@ -31,8 +43,8 @@ import {
   request,
 } from '../services/localService'
 import { Action, AgentAvatar, ChatSendButton, Icon } from './shared'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { ChatMarkdown, ChatText } from './ChatContent'
+import { runMentionKey, taskMentionKey } from './chatMentions'
 import {
   taskMessagePreview,
   workflowService,
@@ -46,6 +58,8 @@ import { RunChanges } from './RunChanges'
 import { HandoffLinks } from './HandoffLinks'
 import { chatEnter, steerShortcut, useChatDraft } from './chatDraft'
 import { FollowupStatus } from './FollowupStatus'
+import { BranchHeader, BranchHistory } from './ChatBranch'
+import { minimumPaneWidth } from '../constants'
 
 function visiblePrompt(prompt: string) {
   const marker = '\nREIN_SPEC_USER_MESSAGE:\n'
@@ -62,6 +76,11 @@ function visiblePrompt(prompt: string) {
 }
 
 type LoadedRun = RunUpdate
+type DraftFork = Pick<ChatFork, 'source_run_id' | 'source_session_id'> & {
+  id: null
+  title: null
+}
+type OpenFork = ChatFork | DraftFork
 type Interaction = NonNullable<AgentEvent['interaction']>
 type SessionSummary = HistoryPage['sessions'][number]
 function pendingRecord(run: AgentRun, prompt: string): LoadedRun {
@@ -96,6 +115,14 @@ export function AgentChat({
   members = [],
   workflow,
   onTask,
+  canSplitChat = true,
+  hidden,
+  onForkVisibilityChange,
+  fork,
+  onCloseFork,
+  onDeleteFork,
+  onForkSource,
+  onForkSubmitted,
 }: {
   agent: Agent
   userName: string
@@ -110,20 +137,34 @@ export function AgentChat({
   members?: Agent[]
   workflow?: WorkflowSnapshot
   onTask?: (id: string) => void
+  canSplitChat?: boolean
+  hidden?: boolean
+  onForkVisibilityChange?: (open: boolean) => void
+  fork?: OpenFork
+  onCloseFork?: () => void
+  onDeleteFork?: () => void
+  onForkSource?: () => void
+  onForkSubmitted?: (fork: ChatFork) => void
 }) {
   const contextId = spec?.id ?? conversation?.id ?? ''
+  const branchSession = fork?.id
+  const isSideChat = !!fork
   const [records, setRecords] = useState<LoadedRun[]>([])
   const cache = useRef(new Map<string, LoadedRun>())
-  const [selectedSession, setSession] = useState(
-    () => spec?.session_id ?? conversation?.session_id ?? savedSession(agent.id),
+  const [selectedSession, setSession] = useState(() =>
+    fork
+      ? (fork.id ?? '')
+      : (spec?.session_id ?? conversation?.session_id ?? savedSession(agent.id)),
   )
   const session = selectedSession ?? ''
   const sessionRef = useRef(session)
-  const draftKey = spec
-    ? `spec:${spec.id}`
-    : conversation
-      ? `scope:${conversation.requirement_id}`
-      : `agent:${agent.id}:${session}`
+  const draftKey = fork
+    ? `fork:${agent.id}:${fork.source_run_id}`
+    : spec
+      ? `spec:${spec.id}`
+      : conversation
+        ? `scope:${conversation.requirement_id}`
+        : `agent:${agent.id}:${session}`
   const {
     draft,
     setDraft,
@@ -136,7 +177,7 @@ export function AgentChat({
   } = useChatDraft(draftKey)
   const [error, setError] = useState('')
   const [pollError, setPollError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!isSideChat || !!branchSession)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -154,6 +195,82 @@ export function AgentChat({
   const cancelHistory = useRef<() => void>(() => {})
   const followBottom = useRef(true)
   const restoreScroll = useRef<{ key: string; top: number } | null>(null)
+  const [forks, setForks] = useState<ChatFork[]>([])
+  const [selectedFork, setSelectedFork] = useState<OpenFork>()
+  const [mainPaneWidth, setMainPaneWidth] = useState<string>()
+  const [showSideChat, setShowSideChat] = useState(true)
+  const panes = useRef<HTMLDivElement>(null)
+  const forkOpener = useRef<HTMLElement | null>(null)
+  const forkRequest = useRef<AbortController | null>(null)
+  const openedFork =
+    selectedFork?.source_session_id === session
+      ? (forks.find((entry) => entry.source_run_id === selectedFork.source_run_id) ?? selectedFork)
+      : undefined
+  const hasSideChat = !!openedFork
+  const showChatSwitch = hasSideChat && !canSplitChat
+  const forkActivity = records
+    .filter((item) => item.run.fork && item.run.sessionId !== session)
+    .map((item) => `${item.run.id}:${item.run.state}`)
+    .join(',')
+  useLayoutEffect(() => {
+    onForkVisibilityChange?.(hasSideChat)
+    return () => onForkVisibilityChange?.(false)
+  }, [hasSideChat, onForkVisibilityChange])
+  useEffect(() => {
+    if (!onForkVisibilityChange || !session || agent.backend !== 'native') return
+    const controller = new AbortController()
+    forkRequest.current = controller
+    void localService.chatForks(session, controller.signal).then(
+      (value) => {
+        if (!controller.signal.aborted) setForks(value)
+      },
+      () => {},
+    )
+    return () => controller.abort()
+  }, [onForkVisibilityChange, session, agent.backend, forkActivity])
+  function openFork(record: LoadedRun, source: HTMLElement) {
+    forkOpener.current = source
+    setMainPaneWidth(undefined)
+    setShowSideChat(true)
+    setSelectedFork(
+      forks.find((entry) => entry.source_run_id === record.run.id) ?? {
+        id: null,
+        source_session_id: record.run.sessionId,
+        source_run_id: record.run.id,
+        title: null,
+      },
+    )
+  }
+  function closeFork() {
+    setSelectedFork(undefined)
+    requestAnimationFrame(() => forkOpener.current?.focus())
+  }
+  function resizeChatPanes(clientX: number) {
+    const rect = panes.current?.getBoundingClientRect()
+    if (!rect) return
+    const width = Math.max(
+      minimumPaneWidth,
+      Math.min(rect.width - minimumPaneWidth - 1, clientX - rect.left),
+    )
+    setMainPaneWidth(`${width}px`)
+  }
+  function centerChatPanes() {
+    setMainPaneWidth('calc((100% - 1px) / 2)')
+  }
+  function focusForkSource(runId: string) {
+    if (showChatSwitch) setShowSideChat(false)
+    requestAnimationFrame(() => {
+      const source = log.current?.querySelector<HTMLElement>(
+        `[data-run-anchor="${CSS.escape(runId)}-agent"]`,
+      )
+      if (source) {
+        source.scrollIntoView({ block: 'center', inline: 'nearest' })
+        source.focus({ preventScroll: true })
+      } else {
+        void loadHistory.current(session, true)
+      }
+    })
+  }
   function publishRecords() {
     setRecords(
       [...cache.current.values()].sort(
@@ -175,18 +292,23 @@ export function AgentChat({
       ),
     })
   }
-  function rememberSession(record: RunRecord) {
-    const { sessionId: id } = record.run
-    setSessions((previous) =>
-      previous.some((item) => item.id === id)
-        ? previous
-        : [{ id, prompt: record.prompt, created_at: record.created_at }, ...previous],
-    )
-  }
+  const rememberSession = useCallback(
+    (record: RunRecord) => {
+      if (record.run.fork || isSideChat) return
+      const { sessionId: id } = record.run
+      setSessions((previous) =>
+        previous.some((item) => item.id === id)
+          ? previous
+          : [{ id, prompt: record.prompt, created_at: record.created_at }, ...previous],
+      )
+    },
+    [isSideChat],
+  )
   function chooseSession(value: string, fetchHistory = true) {
     sessionRef.current = value
     setSession(value)
-    if (!contextId) persistSession(agent.id, value)
+    if (!contextId && !fork) persistSession(agent.id, value)
+    if (value !== session) setSelectedFork(undefined)
     followBottom.current = true
     setHasMore(!!cursors.current.get(value))
     if (fetchHistory) {
@@ -199,6 +321,7 @@ export function AgentChat({
     requestAnimationFrame(() => historyButton.current?.focus())
   }
   useEffect(() => {
+    if (isSideChat && !branchSession) return
     let disposed = false
     let source: EventSource | undefined
     let historyController: AbortController | undefined
@@ -282,7 +405,7 @@ export function AgentChat({
         if (!freshSession.current || requestedSession) {
           sessionRef.current = page.session_id
           setSession(page.session_id)
-          if (!contextId) persistSession(agent.id, page.session_id)
+          if (!contextId && !isSideChat) persistSession(agent.id, page.session_id)
           setHasMore(!!page.next_cursor)
         }
         publishRecords()
@@ -309,7 +432,7 @@ export function AgentChat({
       else void loadHistory.current(sessionRef.current, false)
     }
     document.addEventListener('visibilitychange', visibility)
-    void loadHistory.current(sessionRef.current, false)
+    void loadHistory.current(branchSession ?? sessionRef.current, false)
     return () => {
       disposed = true
       historyController?.abort()
@@ -318,7 +441,7 @@ export function AgentChat({
       loadHistory.current = async () => {}
       cancelHistory.current = () => {}
     }
-  }, [agent.id, contextId])
+  }, [agent.id, branchSession, contextId, isSideChat, rememberSession])
   const visible = records.filter((record) => record.run.sessionId === session)
   const timeline = [
     ...visible.map((record) => ({
@@ -358,16 +481,23 @@ export function AgentChat({
     if (spec && hasUnsavedSpec?.()) {
       throw new Error('请先保存右侧 Spec 草稿，再继续对话或确认阶段。')
     }
-    const response = conversation
-      ? await workflowService.requirementChat(
-          conversation.requirement_id,
-          text,
-          requestId,
-          expectedSession,
-        )
-      : spec
-        ? await workflowService.chat(spec.id, text, requestId, undefined, expectedSession)
-        : await localService.create(agent.id, session, text, requestId)
+    const submittedFork =
+      fork && !fork.id
+        ? await localService.submitFork(agent.id, fork.source_run_id, text, requestId)
+        : undefined
+    const response =
+      submittedFork ??
+      (conversation
+        ? await workflowService.requirementChat(
+            conversation.requirement_id,
+            text,
+            requestId,
+            expectedSession,
+          )
+        : spec
+          ? await workflowService.chat(spec.id, text, requestId, undefined, expectedSession)
+          : await localService.create(agent.id, branchSession ?? session, text, requestId))
+    if (submittedFork) onForkSubmitted?.(submittedFork.fork)
     const record = cache.current.get(response.run.id) ?? pendingRecord(response.run, text)
     cache.current.set(response.run.id, record)
     if (!contextId) rememberSession(record)
@@ -377,7 +507,7 @@ export function AgentChat({
       chooseSession(response.run.sessionId, false)
       freshSession.current = false
     }
-    return stillSelected && !contextId && !session
+    return stillSelected && !fork && !contextId && !session
       ? `agent:${agent.id}:${response.run.sessionId}`
       : draftKey
   }
@@ -457,54 +587,74 @@ export function AgentChat({
       setCancelling(undefined)
     }
   }
-  return (
-    <section className="chat-panel" aria-label="Agent 对话">
-      <header className="panel-header chat-header">
-        {conversation ? <Icon name="people" size={24} /> : <AgentAvatar agent={agent} size={24} />}
-        <div className="chat-heading">
-          <h1>{title ?? agent.name}</h1>
-          <span>
-            {conversation
-              ? `需求讨论 · ${agent.name}`
-              : spec
-                ? `主 Agent · ${agent.name}`
-                : agent.backend === 'native'
-                  ? `${agent.cli} · 原生`
-                  : 'A2A'}{' '}
-            · {agent.disabled ? 'Agent 已下线' : agent.online ? '在线' : 'reind 离线'}
-          </span>
-        </div>
-        {contextId ? (
-          <Action
-            label={conversation ? '需求配置' : 'Spec 配置'}
-            icon="settings"
-            onClick={() => onSettings?.()}
-          />
-        ) : (
-          <Fragment>
-            {!historyOpen && (
+  const panel = (
+    <section
+      className="chat-panel"
+      aria-label={fork ? '侧边对话' : 'Agent 对话'}
+      hidden={hidden || (showChatSwitch && showSideChat)}
+    >
+      {fork && onCloseFork && onDeleteFork ? (
+        <BranchHeader
+          id={fork.id}
+          title={fork.title ?? (hasMore ? null : (visible[0]?.prompt ?? null))}
+          onClose={onCloseFork}
+          onDelete={() => {
+            setDraft('')
+            onDeleteFork()
+          }}
+        />
+      ) : (
+        <header className="panel-header chat-header">
+          {conversation ? (
+            <Icon name="people" size={24} />
+          ) : (
+            <AgentAvatar agent={agent} size={24} />
+          )}
+          <div className="chat-heading">
+            <h1>{title ?? agent.name}</h1>
+            <span>
+              {conversation
+                ? `需求讨论 · ${agent.name}`
+                : spec
+                  ? `主 Agent · ${agent.name}`
+                  : agent.backend === 'native'
+                    ? `${agent.cli} · 原生`
+                    : 'A2A'}{' '}
+              · {agent.disabled ? 'Agent 已下线' : agent.online ? '在线' : 'reind 离线'}
+            </span>
+          </div>
+          {contextId ? (
+            <Action
+              label={conversation ? '需求配置' : 'Spec 配置'}
+              icon="settings"
+              onClick={() => onSettings?.()}
+            />
+          ) : (
+            <Fragment>
+              {!historyOpen && (
+                <Button
+                  ref={historyButton}
+                  color="inherit"
+                  startIcon={<Icon name={History} />}
+                  onClick={() => setHistoryOpen(true)}
+                >
+                  会话历史
+                </Button>
+              )}
               <Button
-                ref={historyButton}
-                color="inherit"
-                startIcon={<Icon name={History} />}
-                onClick={() => setHistoryOpen(true)}
+                startIcon={<Icon name={Plus} />}
+                onClick={() => {
+                  freshSession.current = true
+                  chooseSession('')
+                  setHistoryOpen(false)
+                }}
               >
-                会话历史
+                新对话
               </Button>
-            )}
-            <Button
-              startIcon={<Icon name={Plus} />}
-              onClick={() => {
-                freshSession.current = true
-                chooseSession('')
-                setHistoryOpen(false)
-              }}
-            >
-              新对话
-            </Button>
-          </Fragment>
-        )}
-      </header>
+            </Fragment>
+          )}
+        </header>
+      )}
       {(error || pollError) && (
         <Alert
           severity="error"
@@ -549,7 +699,7 @@ export function AgentChat({
         hidden={historyOpen}
         ref={log}
         role="log"
-        aria-label={`${agent.name}的聊天记录`}
+        aria-label={fork ? '侧边对话聊天记录' : `${agent.name}的聊天记录`}
         aria-live="polite"
         aria-busy={loading}
         onScroll={(event) => {
@@ -560,6 +710,15 @@ export function AgentChat({
             void loadHistory.current(sessionRef.current, true)
         }}
       >
+        {fork && onForkSource && (
+          <BranchHistory
+            source={fork.source_run_id}
+            agent={agent}
+            userName={userName}
+            prompt={visiblePrompt}
+            onSource={onForkSource}
+          />
+        )}
         {hasMore && (
           <Button
             size="small"
@@ -571,7 +730,7 @@ export function AgentChat({
             {loadingOlder ? '正在加载更早记录…' : '加载更早记录'}
           </Button>
         )}
-        {!timeline.length && (
+        {!fork && !timeline.length && (
           <div className="empty-message">
             <Icon name="chat" />
             <p>{loading ? '正在读取执行记录…' : `与 ${agent.name} 开始对话`}</p>
@@ -602,6 +761,13 @@ export function AgentChat({
               }
               agent={agent}
               userName={userName}
+              sideChat={forks.find((entry) => entry.source_run_id === item.record.run.id)}
+              sideChatSelected={openedFork?.source_run_id === item.record.run.id}
+              createSideChat={
+                onForkVisibilityChange && item.record.run.canFork && agent.backend === 'native'
+                  ? (button) => openFork(item.record, button)
+                  : undefined
+              }
             />
           ) : (
             <Fragment key={item.message.id}>
@@ -627,17 +793,20 @@ export function AgentChat({
                       })}
                     </time>
                   </div>
-                  <Paper
-                    elevation={0}
-                    className={`message-bubble${item.message.kind === 'waiting' ? ' waiting-message' : ''}`}
-                  >
-                    <span>{item.content.replaceAll('@用户', `@${userName}`)}</span>
+                  <Paper elevation={0} className="message-bubble">
+                    <span>
+                      <ChatText text={item.content} receipt={taskMentionKey(item.message.id)} />
+                    </span>
                   </Paper>
-                  {item.preview && <HandoffLinks {...item.preview} />}
-                  {onTask && (
-                    <Button onClick={() => onTask(item.message.task_id)}>
-                      {item.message.kind === 'waiting' ? '查看任务交互' : '查看任务'}
-                    </Button>
+                  {(item.preview || onTask) && (
+                    <div className="message-task-actions">
+                      {item.preview && <HandoffLinks {...item.preview} />}
+                      {onTask && (
+                        <Button onClick={() => onTask(item.message.task_id)}>
+                          {item.message.kind === 'waiting' ? '查看任务交互' : '查看任务'}
+                        </Button>
+                      )}
+                    </div>
                   )}
                   {item.message.update_error && (
                     <Button
@@ -693,20 +862,21 @@ export function AgentChat({
           }}
         >
           <InputBase
+            autoFocus={!!fork}
             inputRef={input}
             multiline
             maxRows={5}
             fullWidth
             value={draft}
             onChange={(event) => {
-              if (!contextId && !session && !freshSession.current) {
+              if (!fork && !contextId && !session && !freshSession.current) {
                 freshSession.current = true
                 persistSession(agent.id, '')
               }
               setDraft(event.target.value)
             }}
-            placeholder={`发送给 ${agent.name}…`}
-            inputProps={{ 'aria-label': '发送消息' }}
+            placeholder={fork ? '发送给侧边对话…' : `发送给 ${agent.name}…`}
+            inputProps={{ 'aria-label': fork ? '发送侧边对话消息' : '发送消息' }}
             onKeyDown={(event) => {
               const action = chatEnter(event, !!active, sendMode)
               if (action) void send(action === 'steer')
@@ -744,6 +914,106 @@ export function AgentChat({
         </Paper>
       </div>
     </section>
+  )
+  if (fork || !onForkVisibilityChange) return panel
+  return (
+    <div
+      className={`chat-panel chat-panes${showChatSwitch ? ' has-chat-switch' : ''}`}
+      ref={panes}
+      style={
+        hasSideChat && canSplitChat
+          ? {
+              gridTemplateColumns: `clamp(${minimumPaneWidth}px, ${mainPaneWidth ?? `calc(100% - ${minimumPaneWidth + 1}px)`}, calc(100% - ${minimumPaneWidth + 1}px)) 1px minmax(${minimumPaneWidth}px, 1fr)`,
+            }
+          : undefined
+      }
+    >
+      {showChatSwitch && (
+        <div className="chat-view-switch" role="group" aria-label="切换聊天栏">
+          <Button
+            size="small"
+            aria-pressed={!showSideChat}
+            variant={showSideChat ? 'text' : 'contained'}
+            onClick={() => setShowSideChat(false)}
+          >
+            主 Chat
+          </Button>
+          <Button
+            size="small"
+            aria-pressed={showSideChat}
+            variant={showSideChat ? 'contained' : 'text'}
+            onClick={() => setShowSideChat(true)}
+          >
+            侧边对话
+          </Button>
+        </div>
+      )}
+      {panel}
+      {openedFork && (
+        <>
+          {canSplitChat && (
+            <div
+              className="split-divider"
+              role="separator"
+              tabIndex={0}
+              aria-label="调整主栏与侧边对话宽度"
+              aria-orientation="vertical"
+              title="双击等分主栏与侧边对话"
+              onDoubleClick={centerChatPanes}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  centerChatPanes()
+                }
+                if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                  e.preventDefault()
+                  resizeChatPanes(
+                    e.currentTarget.getBoundingClientRect().left +
+                      (e.key === 'ArrowRight' ? 24 : -24),
+                  )
+                }
+              }}
+              onPointerDown={(e) => {
+                e.preventDefault()
+                e.currentTarget.setPointerCapture(e.pointerId)
+              }}
+              onPointerMove={(e) => {
+                if (e.currentTarget.hasPointerCapture(e.pointerId)) resizeChatPanes(e.clientX)
+              }}
+            >
+              <span className="split-handle">
+                <Icon name="drag" size={14} />
+              </span>
+            </div>
+          )}
+          <AgentChat
+            key={openedFork.source_run_id}
+            agent={agent}
+            userName={userName}
+            sendMode={sendMode}
+            fork={openedFork}
+            hidden={showChatSwitch && !showSideChat}
+            onForkSubmitted={(created) => {
+              forkRequest.current?.abort()
+              setForks((previous) => [
+                ...previous.filter((entry) => entry.id !== created.id),
+                created,
+              ])
+              setSelectedFork((previous) =>
+                previous?.source_run_id === created.source_run_id ? created : previous,
+              )
+            }}
+            onCloseFork={closeFork}
+            onDeleteFork={() => {
+              forkRequest.current?.abort()
+              setForks((previous) => previous.filter((item) => item.id !== openedFork.id))
+              closeFork()
+            }}
+            onForkSource={() => focusForkSource(openedFork.source_run_id)}
+          />
+        </>
+      )}
+    </div>
   )
 }
 
@@ -851,7 +1121,9 @@ function SessionHistory({
                                 month: 'short',
                                 day: 'numeric',
                                 year:
-                                  date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+                                  date.getFullYear() === today.getFullYear()
+                                    ? undefined
+                                    : 'numeric',
                               })}
                       </time>
                     )}
@@ -876,11 +1148,17 @@ export function RunMessages({
   agent,
   userName,
   directory = agent.directory ?? undefined,
+  sideChat,
+  sideChatSelected,
+  createSideChat,
 }: {
   record: LoadedRun
   agent: Agent
   userName: string
   directory?: string
+  sideChat?: ChatFork
+  sideChatSelected?: boolean
+  createSideChat?: (button: HTMLElement) => void
 }) {
   const changeRecords = useMemo(() => [record], [record])
   const [now, setNow] = useState(Date.now)
@@ -988,18 +1266,26 @@ export function RunMessages({
         <summary className="hub-activity-summary">
           <Icon name="clock" size={14} />
           <span className="hub-activity-label">思考摘要</span>
-          <span className="hub-activity-preview">{item.text}</span>
+          <span className="hub-activity-preview">
+            <ChatText text={item.text} />
+          </span>
           <span className="hub-activity-chevron">
             <Icon name="down" size={12} />
           </span>
         </summary>
         <div className="hub-activity-content">
-          <p>{item.text}</p>
+          <p>
+            <ChatText text={item.text} />
+          </p>
         </div>
       </details>
     ) : (
       <div key={id} className="hub-message-text">
-        <Markdown remarkPlugins={[remarkGfm]}>{item.text}</Markdown>
+        <ChatMarkdown
+          text={item.text}
+          run={record.run}
+          receipt={runMentionKey(record.run.id, id.slice('text:'.length))}
+        />
       </div>
     )
   })
@@ -1016,17 +1302,18 @@ export function RunMessages({
     <>
       {!record.prompt.startsWith('REIN SPEC TASK UPDATE\n') && (
         <article className="message own" data-run-anchor={`${record.run.id}-user`}>
+          <AgentAvatar />
           <div className="message-content">
             <div className="message-author">
-              <span>
-                {userName}　{when}
-              </span>
+              <strong>{userName}</strong>
+              <time dateTime={record.created_at}>{when}</time>
             </div>
             <div className="message-bubble-row">
               <Paper elevation={0} className="message-bubble">
-                <span>{record.prompt}</span>
+                <span>
+                  <ChatText text={record.prompt} />
+                </span>
               </Paper>
-              <AgentAvatar />
             </div>
           </div>
         </article>
@@ -1035,6 +1322,7 @@ export function RunMessages({
         ?.filter((ack) => ack.instruction)
         .map((ack) => (
           <article className="message own" key={ack.commandId}>
+            <AgentAvatar />
             <div className="message-content">
               <div className="message-author">
                 <span>
@@ -1048,14 +1336,19 @@ export function RunMessages({
               </div>
               <div className="message-bubble-row">
                 <Paper elevation={0} className="message-bubble">
-                  <span>{ack.instruction}</span>
+                  <span>
+                    <ChatText text={ack.instruction ?? ''} />
+                  </span>
                 </Paper>
-                <AgentAvatar />
               </div>
             </div>
           </article>
         ))}
-      <article className="message agent-message" data-run-anchor={`${record.run.id}-agent`}>
+      <article
+        className="message agent-message"
+        data-run-anchor={`${record.run.id}-agent`}
+        tabIndex={createSideChat ? -1 : undefined}
+      >
         <AgentAvatar agent={agent} />
         <div className="message-content">
           <div className="message-author">
@@ -1099,22 +1392,42 @@ export function RunMessages({
               {error}
             </Alert>
           ))}
-          <div className={`hub-message-actions${infoAnchor ? ' is-open' : ''}`}>
-            {answer && (
+          <div className="hub-message-footer">
+            <div className={`hub-message-actions${infoAnchor ? ' is-open' : ''}`}>
+              {answer && (
+                <Action
+                  label={copyStatus === 'copied' ? '已复制' : '复制回答'}
+                  onClick={() => {
+                    void copyAnswer()
+                  }}
+                >
+                  {copyStatus === 'copied' ? <Check size={14} /> : <Copy size={14} />}
+                </Action>
+              )}
               <Action
-                label={copyStatus === 'copied' ? '已复制' : '复制回答'}
-                onClick={() => {
-                  void copyAnswer()
-                }}
+                label="执行信息"
+                icon="info"
+                onClick={(event) => setInfoAnchor(event.currentTarget)}
+              />
+            </div>
+            {answer && createSideChat && (
+              <Tooltip
+                title={sideChat ? `打开侧边对话，${sideChat.message_count} 条消息` : '创建侧边对话'}
               >
-                {copyStatus === 'copied' ? <Check size={14} /> : <Copy size={14} />}
-              </Action>
+                <span className={sideChat ? 'side-chat-marker' : 'hub-message-actions'}>
+                  <IconButton
+                    aria-label={
+                      sideChat ? `打开侧边对话，${sideChat.message_count} 条消息` : '创建侧边对话'
+                    }
+                    aria-pressed={sideChat ? !!sideChatSelected : undefined}
+                    onClick={(event) => createSideChat(event.currentTarget)}
+                  >
+                    <GitFork size={15} />
+                    {sideChat && <span>{sideChat.message_count}</span>}
+                  </IconButton>
+                </span>
+              </Tooltip>
             )}
-            <Action
-              label="执行信息"
-              icon="info"
-              onClick={(event) => setInfoAnchor(event.currentTarget)}
-            />
           </div>
           {copyStatus === 'error' && (
             <Alert severity="error">复制失败，请检查浏览器剪贴板权限后重试。</Alert>

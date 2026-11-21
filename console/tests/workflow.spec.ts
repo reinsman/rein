@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 
@@ -40,6 +40,105 @@ async function expectStatusNextToTitle(node: Locator) {
     )
     .toBe(true)
 }
+
+test('chat previews workspace files and clears an at-mention only after it is visible', async ({
+  browser,
+  page,
+  request,
+}) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  const { project, requirement } = await projectWithSpec(request, '聊天引用')
+  const directory = join(project.preferred_directory, 'src')
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, 'preview.txt'), '第一行\n<script>plain text</script>\n第三行')
+  const outside = join(dirname(project.preferred_directory), 'secret-outside.txt')
+  writeFileSync(outside, 'outside content')
+  symlinkSync(outside, join(directory, 'linked.txt'))
+  await select(page, project.name, requirement.title)
+  await page.getByRole('textbox', { name: '搜索项目和需求', exact: true }).fill('')
+  await page.getByRole('button', { name: '与codex对话', exact: true }).click()
+  const node = page.getByRole('button', { name: requirement.title, exact: true })
+  const unread = node.locator('.node-mention')
+
+  const response = await request.post(`/api/requirements/${requirement.id}/chat`, {
+    data: { prompt: 'fixture-chat-references', request_id: randomUUID() },
+  })
+  expect(response.ok()).toBe(true)
+  const { run } = await response.json()
+  await expect(unread).toBeVisible()
+  const observerContext = await browser.newContext({ baseURL: new URL(page.url()).origin })
+  const observer = await observerContext.newPage()
+  await observer.goto('/')
+  await observer.getByRole('textbox', { name: '搜索项目和需求', exact: true }).fill(project.name)
+  const observerUnread = observer
+    .getByRole('button', { name: requirement.title, exact: true })
+    .locator('.node-mention')
+  await expect(observerUnread).toBeVisible()
+  await page.bringToFront()
+  const receiptSaved = page.waitForResponse(
+    (response) => response.url().endsWith('/api/workflow/chat-mentions/read') && response.ok(),
+  )
+  await node.click()
+  const answer = page.locator('.hub-final-answer')
+  await expect(answer.locator('.chat-mention')).toHaveText(['@Haibin', '@codex'])
+  const { keys } = await (await receiptSaved).json()
+  expect(keys).toHaveLength(1)
+  expect((await (await request.get('/api/workflow')).json()).read_chat_mentions).toContain(keys[0])
+  await expect(unread).toHaveCount(0)
+  await expect(observerUnread).toHaveCount(0)
+  await observerContext.close()
+  for (const author of ['user', 'agent']) {
+    const header = page.locator(`[data-run-anchor="${run.run_id}-${author}"] .message-author`)
+    const gap = await header.evaluate((element) => {
+      const name = element.firstElementChild!.getBoundingClientRect()
+      const time = element.querySelector('time')!.getBoundingClientRect()
+      return time.left - name.right
+    })
+    expect(gap).toBe(11)
+  }
+  await expect(answer.getByRole('link', { name: '目录外', exact: true })).toHaveCount(0)
+  await expect(answer.getByText('目录外', { exact: true })).toBeVisible()
+  await expect(answer.getByRole('button', { name: 'src/preview.txt:2', exact: true })).toBeVisible()
+  const fileLink = answer.getByRole('button', { name: '清单', exact: true })
+  await fileLink.focus()
+  await fileLink.press('Enter')
+  const preview = page.getByRole('dialog', { name: /src\/preview\.txt:2/ })
+  await expect(preview.locator('mark')).toHaveText('<script>plain text</script>')
+  await expect(preview.locator('script')).toHaveCount(0)
+  await preview.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(fileLink).toBeFocused()
+
+  await answer.getByRole('button', { name: '符号链接', exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('符号链接')
+  await expect(page.getByRole('dialog')).not.toContainText('outside content')
+  const blocked = await request.post(`/api/runs/${run.run_id}/file`, {
+    data: { path: '../secret-outside.txt' },
+  })
+  expect(blocked.status()).toBe(400)
+  expect(await blocked.text()).not.toContain('outside content')
+  await page.reload()
+  await expect(page.locator('.hub-final-answer .chat-mention')).toHaveCount(2)
+  await expect(unread).toHaveCount(0)
+  expect(errors).toEqual([])
+})
+
+test('legacy at-mention receipts migrate when the Console opens', async ({ page, request }) => {
+  const legacyKey = 'mention:' + JSON.stringify(['task-message', randomUUID()])
+  await page.goto('/')
+  await page.evaluate(
+    (key) => localStorage.setItem('rein.read-node-notices', JSON.stringify([key])),
+    legacyKey,
+  )
+  await page.reload()
+  await expect
+    .poll(async () => (await (await request.get('/api/workflow')).json()).read_chat_mentions)
+    .toContain(legacyKey)
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem('rein.read-node-notices')))
+    .toBe('[]')
+})
+
 test('Spec build and verification use the shared queue and real handoff artifacts', async ({
   page,
   request,
@@ -184,8 +283,14 @@ test('Spec build and verification use the shared queue and real handoff artifact
   await expect(waiting).toContainText('@Haibin')
   await expect(waiting.locator('.message-author strong')).toHaveText('pi')
   await expect(waiting.getByRole('img', { name: '系统消息', exact: true })).toBeVisible()
-  await expect(waiting.locator('.message-bubble')).toHaveCSS('background-color', 'rgb(255, 249, 235)')
-  await expect(waiting.locator('.message-bubble')).toHaveCSS('border-left-width', '2px')
+  await expect(waiting.locator('.message-bubble')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(waiting.locator('.message-bubble')).toHaveCSS(
+    'border-left',
+    '1px solid rgb(229, 232, 239)',
+  )
+  const waitingActions = waiting.locator('.message-task-actions')
+  await expect(waitingActions.getByRole('button', { name: 'Handoff', exact: true })).toHaveCount(0)
+  await expect(waitingActions).toHaveCSS('border-left', '1px solid rgb(229, 232, 239)')
   await expect(requirementStatus).toHaveAttribute('data-state', 'waiting')
   await expect(specStatus).toHaveAttribute('data-state', 'waiting')
   const waitingCard = page.locator('.task-card').filter({ hasText: '实现首选目录回退' })
@@ -255,9 +360,12 @@ test('Spec build and verification use the shared queue and real handoff artifact
     fullPage: true,
   })
   await page.getByRole('button', { name: requirement.title, exact: true }).click()
-  await expect(
-    page.locator('[data-task-message="started"] .message-author strong').first(),
-  ).toHaveText('pi')
+  const started = page.locator('[data-task-message="started"]').first()
+  await expect(started.locator('.message-author strong')).toHaveText('pi')
+  const startedActions = started.locator('.message-task-actions')
+  await expect(startedActions.getByRole('button', { name: '查看任务', exact: true })).toBeVisible()
+  await expect(startedActions.getByRole('button', { name: 'Handoff', exact: true })).toHaveCount(0)
+  await expect(startedActions).toHaveCSS('border-left', '1px solid rgb(229, 232, 239)')
   await expect(
     page.locator('[data-task-message="completed"]').filter({ hasText: 'codex' }).first(),
   ).toBeVisible()
@@ -265,11 +373,33 @@ test('Spec build and verification use the shared queue and real handoff artifact
     hasText: '已完成「实现首选目录回退」',
   })
   await expect(completion.getByRole('img', { name: '系统消息', exact: true })).toBeVisible()
-  await expect(completion.locator('.message-bubble')).toHaveCSS('background-color', 'rgb(243, 244, 246)')
-  await expect(completion.locator('.message-bubble')).toHaveCSS('border-left-color', 'rgb(124, 148, 185)')
+  const actions = completion.locator('.message-task-actions')
+  const handoffBorder = await actions.evaluate((element) => getComputedStyle(element).borderLeft)
+  await expect(completion.locator('.message-bubble')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(completion.locator('.message-bubble')).toHaveCSS('border-left', handoffBorder)
   await expect(completion.locator('.message-bubble')).not.toContainText('验证证据')
   await expect(completion).not.toContainText('本次按照任务范围完成实现检查')
-  await completion.getByRole('button', { name: /Coding Handoff/ }).click()
+  const handoffButton = completion.getByRole('button', { name: 'Handoff', exact: true })
+  const taskButton = completion.getByRole('button', { name: '查看任务', exact: true })
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(handoffButton).toBeVisible()
+    await expect(taskButton).toBeVisible()
+    await expect
+      .poll(() =>
+        actions.evaluate((element) => {
+          const preview = element.querySelector('.handoff-links button')!.getBoundingClientRect()
+          const task = element.querySelector(':scope > button')!.getBoundingClientRect()
+          return (
+            preview.right <= task.left &&
+            Math.abs(preview.top + preview.height / 2 - task.top - task.height / 2) < 1
+          )
+        }),
+      )
+      .toBe(true)
+  }
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await handoffButton.click()
   const handoff = page.getByRole('dialog', { name: 'Task Handoff · 实现首选目录回退' })
   await expect(handoff.locator('.sdd-markdown')).toContainText('本次按照任务范围完成实现检查')
   await handoff.getByText('查看完整任务报告').click()

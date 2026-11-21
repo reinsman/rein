@@ -33,12 +33,10 @@ import { Settings } from './components/Settings'
 import { AgentSettings } from './components/AgentSettings'
 import { Login } from './components/Login'
 import { Action, AgentAvatar, Icon } from './components/shared'
-import { statusLabels } from './constants'
+import { minimumPaneWidth, statusLabels } from './constants'
 import type { QueueRole } from './services/workflow'
 import { statusColors } from './theme'
 import './App.css'
-
-const minimumPaneWidth = 360
 
 export default function App() {
   const [initialNavigation] = useState(preferencesService.navigation)
@@ -60,6 +58,7 @@ export default function App() {
     initialNavigation?.mobilePanel ?? 'chat',
   )
   const [split, setSplit] = useState(preferencesService.split)
+  const [forkOpen, setForkOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [selectedTask, setSelectedTask] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -89,9 +88,13 @@ export default function App() {
   // Normalize against the expanded sidebar so collapsing it gives all released space to Todo.
   const referenceWidth = Math.max(1, viewportWidth - 296 - 1)
   const workspaceWidth = viewportWidth - (!compact && sidebarVisible ? 296 : 56) - 1
+  const canSplitChat = !mobile && workspaceWidth >= 3 * minimumPaneWidth + 1
+  const forkWidth = forkOpen && canSplitChat ? minimumPaneWidth + 1 : 0
+  const minChatWidth = minimumPaneWidth + forkWidth
+  const maxChatWidth = workspaceWidth - minimumPaneWidth
   const chatWidth = Math.max(
-    minimumPaneWidth,
-    Math.min(workspaceWidth - minimumPaneWidth, split * referenceWidth),
+    minChatWidth,
+    Math.min(maxChatWidth, split * referenceWidth + forkWidth),
   )
   const splitValueRef = useRef(split)
   useEffect(() => {
@@ -248,13 +251,12 @@ export default function App() {
     requestAnimationFrame(() => taskOpenerRef.current?.focus())
   }
   function adjustSplit(clientX: number) {
-    const rect = splitRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const next =
-      Math.max(
-        minimumPaneWidth,
-        Math.min(rect.width - 1 - minimumPaneWidth, clientX - rect.left),
-      ) / referenceWidth
+    const layout = splitRef.current
+    if (!layout) return
+    const rect = layout.getBoundingClientRect()
+    const width = Math.max(minChatWidth, Math.min(maxChatWidth, clientX - rect.left))
+    if (width === chatWidth) return
+    const next = (width - forkWidth) / referenceWidth
     setSplit(next)
     splitValueRef.current = next
   }
@@ -309,6 +311,7 @@ export default function App() {
       setEntityEditor({ kind: 'spec', projectId: requirement.projectId, requirement }),
     onAgentSettings: (agent: Agent) => setConfiguredAgent(agent),
     onCreateAgent: () => setConfiguredAgent('new'),
+    notify,
   }
   const selectedAgent = data.agents.find((agent) => agent.id === scope.agentId)
   const selectedSpec = data.workflow?.specs.find((spec) => spec.id === scope.specId)
@@ -387,6 +390,8 @@ export default function App() {
                 agent={mainAgent}
                 userName={userName}
                 sendMode={preferences.sendMode}
+                canSplitChat={canSplitChat}
+                onForkVisibilityChange={setForkOpen}
                 onSettings={() => setSettings(true)}
               />
             ) : (
@@ -412,6 +417,8 @@ export default function App() {
               onMembers={() => setInfo('members')}
               notify={notify}
               sendMode={preferences.sendMode}
+              canSplitChat={canSplitChat}
+              onForkVisibilityChange={setForkOpen}
               userName={userName}
               onSettings={() => setSettings(true)}
             />
@@ -423,7 +430,7 @@ export default function App() {
             aria-orientation="vertical"
             aria-valuemin={0}
             aria-valuemax={100}
-            aria-valuenow={Math.round((chatWidth / workspaceWidth) * 100)}
+            aria-valuenow={Math.min(100, Math.round((chatWidth / workspaceWidth) * 100))}
             tabIndex={0}
             onKeyDown={(e) => {
               if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -508,7 +515,7 @@ export default function App() {
         task={data.tasks.find((t) => t.id === selectedTask)}
         expanded={expanded}
         defaultWidth={detailDefaultWidth}
-        todoWidth={mobile ? viewportWidth : workspaceWidth - chatWidth}
+        todoWidth={mobile ? viewportWidth : Math.max(minimumPaneWidth, workspaceWidth - chatWidth)}
         panelLabel={selectedSpec ? 'Spec' : 'Todo'}
         chatLabel={selectedSpec ? '对话' : '群聊'}
         widthRatio={detailWidthRatio}
@@ -788,10 +795,12 @@ export default function App() {
       {snackbar}
     </div>
   )
-  const specVisible = !selectedTask && !(compact && mobileNav) && (!mobile || mobilePanel === 'tasks')
+  const specVisible =
+    !selectedTask && !(compact && mobileNav) && (!mobile || mobilePanel === 'tasks')
   return (
     <NodeStatusProvider
       data={data}
+      userName={userName}
       viewedTaskId={selectedTask}
       viewedSpecId={specVisible ? selectedSpec?.id : undefined}
     >

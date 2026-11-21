@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { Divider, IconButton, ListItemButton, OutlinedInput, Tooltip } from '@mui/material'
 import type { Agent, AppData, ChatScope, Project, Requirement } from '../types'
 import { Action, AgentAvatar, Icon, StatusDot } from './shared'
 import { AgentLabels } from './AgentLabels'
-import { NodeStatus } from './NodeStatus'
+import { NodeMention, NodeStatus } from './NodeStatus'
 
 import { reinService } from '../services/reinService'
 
@@ -20,8 +20,52 @@ interface Props {
   onSpec: (requirement: Requirement) => void
   onAgentSettings: (agent: Agent) => void
   onCreateAgent: () => void
+  notify: (text: string) => void
   userName: string
 }
+
+const connections = [
+  { title: 'GitHub', icon: '/icons/connector-github.svg' },
+  { title: 'ONES', icon: '/icons/connector-ones.png' },
+]
+
+function SidebarRoster({
+  title,
+  addLabel,
+  onAdd,
+  children,
+}: {
+  title: string
+  addLabel: string
+  onAdd: () => void
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  const listId = useId()
+  return (
+    <section className="sidebar-roster" aria-label={title}>
+      <div className="roster-header">
+        <button
+          className="roster-toggle"
+          type="button"
+          aria-expanded={open}
+          aria-controls={listId}
+          onClick={() => setOpen(!open)}
+        >
+          <span className={`tree-chevron ${open ? 'expanded' : ''}`}>
+            <Icon name="down" />
+          </span>
+          {title}
+        </button>
+        <Action label={addLabel} icon="plus" className="quiet-action" onClick={onAdd} />
+      </div>
+      <div id={listId} className="sidebar-roster-list" hidden={!open}>
+        {children}
+      </div>
+    </section>
+  )
+}
+
 export function Sidebar({
   data,
   scope,
@@ -34,6 +78,7 @@ export function Sidebar({
   onSpec,
   onAgentSettings,
   onCreateAgent,
+  notify,
   userName,
 }: Props) {
   const [search, setSearch] = useState('')
@@ -48,6 +93,7 @@ export function Sidebar({
   const visibleProjects = search
     ? projects
     : projects.filter((project, index) => index < visibleCount || project.id === currentProjectId)
+  const showConnectionNotice = () => notify('正在设计')
   return (
     <aside className="sidebar" aria-label="项目导航">
       <div className="workspace-header">
@@ -148,6 +194,7 @@ export function Sidebar({
                                   <Icon name="requirement" />
                                   <span className="nav-text">{requirement.title}</span>
                                   <NodeStatus requirementId={requirement.id} />
+                                  <NodeMention id={requirement.id} />
                                 </ListItemButton>
                                 <Action
                                   label={`编辑需求 ${requirement.title}`}
@@ -185,6 +232,7 @@ export function Sidebar({
                                       <Icon name="spec" />
                                       <span className="nav-text">{spec.title}</span>
                                       <NodeStatus specId={spec.id} />
+                                      <NodeMention id={spec.id} />
                                     </ListItemButton>
                                   ))}
                               </div>
@@ -208,17 +256,24 @@ export function Sidebar({
             </div>
           </section>
         </nav>
-        {!search && (
-          <div className="agent-roster">
-            <div className="roster-header">
-              <span>Agents</span>
-              <Action
-                label="新建 Agent"
-                icon="plus"
-                className="quiet-action"
-                onClick={onCreateAgent}
-              />
-            </div>
+        <div className="sidebar-rosters" hidden={!!search}>
+          <SidebarRoster title="连接" addLabel="新建连接" onAdd={showConnectionNotice}>
+            <ul className="connection-list" aria-label="连接器">
+              {connections.map(({ title, icon }) => (
+                <li className="connection-row" key={title}>
+                  <img src={icon} alt="" width={16} height={16} />
+                  <span className="nav-text">{title}</span>
+                  <Action
+                    label={`${title}设置`}
+                    icon="settings"
+                    className="connection-settings-action"
+                    onClick={showConnectionNotice}
+                  />
+                </li>
+              ))}
+            </ul>
+          </SidebarRoster>
+          <SidebarRoster title="Agents" addLabel="新建 Agent" onAdd={onCreateAgent}>
             {data.agentError && (
               <p className="hub-roster-error" role="alert">
                 无法读取 Agent：{data.agentError}
@@ -270,8 +325,8 @@ export function Sidebar({
                 />
               </div>
             ))}
-          </div>
-        )}
+          </SidebarRoster>
+        </div>
       </div>
       <div className="account-footer">
         <Divider />

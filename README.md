@@ -61,13 +61,13 @@ add 只保存配置，初始下线；执行 `rein agent up <名称>` 上线后�
 
 可选原生参数包括 `--executable`、`--native-config`、`--model` 和 `--prepare`。独立对话默认在 `<REIND_HOME>/agents/<类型>/` 启动，可用 `--directory` 或 `--workspace` 设置覆盖值。项目内的任务与对话使用项目首选目录；从任务历史续聊沿用该次执行记录的目录。CLI 相对路径按调用位置解析为绝对路径。
 
-本地 Agent 对象仍保存在 `<REIND_HOME>/agents/<名称>.json`。同类 Agent 的新会话共用 `agents/codex/config.toml` 或 `agents/pi/settings.json` 和 `agents/pi/models.json`。首次生成时从原生默认目录导入模型和提供商相关配置。可用 `--native-config` 指定首次导入的来源，已有的共享文件保持原样。原生登录文件、历史和桌面工具配置留在原目录。旧会话继续使用原生目录，新目录可能需要单独登录。
+本地 Agent 对象仍保存在 `<REIND_HOME>/agents/<名称>.json`。默认使用原生 CLI 配置。开启独立配置后，同类 Agent 的新会话共用 `agents/codex/config.toml` 或 `agents/pi/settings.json` 和 `agents/pi/models.json`。首次开启会导入模型和提供商相关配置，`--native-config` 可指定导入来源。已有共享文件和原生登录状态保存在各自目录，Codex 的独立目录可能需要单独登录。切换只影响新会话，已有会话继续使用创建时的配置目录。
 
-系统配置的「Agent 配置」可查看和编辑共享文件，「Agents 编排」负责角色与调度。每个 Agent 的「模型与思考」独立覆盖类型配置的默认值。
+系统配置的「Agent 配置」可按类型切换配置来源。开启独立配置后可查看和编辑共享文件。「Agents 编排」负责角色与调度。每个 Agent 的「模型与思考」可覆盖当前类型配置的默认值。
 
 侧栏每个 Agent 的齿轮打开独立配置弹窗，沿用系统配置样式。可保存权限、模型 ID、思考强度、默认技能来源、附加技能目录和技能启停，也可修改本地运行参数；运行中的 Agent 拒绝修改。保存写入本机 Agent JSON，下次运行时读取，包括续聊。名称关联历史，不能通过编辑改名。
 
-系统配置的「Agent 配置」可设置各类型的默认权限。Codex 初始为 `full_access`，使用 `danger-full-access` 和 `never`，权限效果与 YOLO 相同。也可选 `workspace_write` 或 `read_only`，超出沙箱的操作采用 `on-request` 审批。Agent JSON 中省略 `permissions` 即继承类型默认值，显式填写则覆盖。有效权限在下一轮执行时应用。Pi 按启动账户和运行环境的权限执行，A2A 权限由远端管理。模型和 `reasoning_effort` 留空时沿用 CLI 配置，具体组合由原生 CLI 校验。
+系统配置的「Agent 配置」可设置 Codex 的默认权限模式。请求审批（`workspace_write`，也接受 `ask_for_approval`）使用工作区写入沙箱，需要额外权限时由用户审批。帮我审批（`approve_for_me`）使用同样的沙箱和 `on-request` 策略，由 Codex 自动审查符合条件的请求。完全访问（`full_access`）使用 `danger-full-access` 和 `never`，也是 Rein 的初始默认值。已有的 `read_only` 配置继续使用只读沙箱，直到用户更改模式。Agent JSON 中省略 `permissions` 即继承类型默认值，显式填写则覆盖。有效权限在下一轮执行时应用。Pi 固定显示完全访问，按启动账户和运行环境的权限执行。A2A 权限由远端管理。模型和 `reasoning_effort` 留空时沿用 CLI 配置，具体组合由原生 CLI 校验。
 
 技能默认使用 Rein 管理的 `<REIND_HOME>/skills`（通常为 `~/.reind/skills`），不自动加载原生用户或项目技能目录；Agent 设置的 SKILL 配置显示来源选项和只读的实际默认目录。`skill_source` 默认为 `rein`，保存时可省略；选择 `native` 可恢复原生用户／项目目录发现，兼容不支持指定目录的 CLI。`skill_directories` 只保存附加绝对目录，默认留空，运行时添加管理目录不会写回该字段。`disabled_skills` 为禁用技能的绝对 `SKILL.md` 路径，仅对当前 Agent 的执行生效，不修改共享技能文件或用户级 CLI 配置。默认模式下 Pi 只显式加载已启用的文件技能，Codex 通过额外目录发现和会话级技能配置筛选。Pi 筛选覆盖发现的文件技能，包和扩展技能需通过原生配置管理；A2A 的这些设置由远端维护。
 

@@ -396,7 +396,7 @@ for (const terminal of ['completed', 'failed']) {
       }
       await page.getByRole('button', { name: '关闭任务详情', exact: true }).click()
       await page.setViewportSize({ width: 1440, height: 900 })
-      const previewLink = completion.getByRole('button', { name: /Coding Handoff/ })
+      const previewLink = completion.getByRole('button', { name: 'Handoff', exact: true })
       await expect(previewLink.locator('svg.lucide-hand-helping')).toBeVisible()
       await previewLink.click()
       const preview = page.getByRole('dialog', { name: `Task Handoff · ${title}` })

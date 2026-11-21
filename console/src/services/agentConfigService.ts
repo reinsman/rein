@@ -9,10 +9,22 @@ export type TypeDefaults = {
   permissions: AgentPermissions
 }
 
+export const codexPermissionModes = {
+  workspace_write: '请求审批 Ask for approval',
+  approve_for_me: '帮我审批 Approve for me',
+  full_access: '完全访问 Full access',
+}
+
 export const permissionLabels: Record<AgentPermissions, string> = {
-  full_access: 'Full access（YOLO）',
-  workspace_write: '项目目录写入',
-  read_only: '只读',
+  ...codexPermissionModes,
+  read_only: '只读（旧配置）',
+}
+
+export const codexPermissionDescriptions: Record<AgentPermissions, string> = {
+  workspace_write: '使用工作区写入沙箱，需要额外权限时由你审批。',
+  approve_for_me: '使用工作区写入沙箱，符合条件的请求由 Codex 自动审查。',
+  full_access: '关闭 Codex 沙箱和操作审批，以启动账户的权限执行。',
+  read_only: '使用只读沙箱，需要额外权限时由你审批。',
 }
 
 export const agentConfigService = {

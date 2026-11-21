@@ -1,6 +1,7 @@
 //! 共用执行事件；原生和远程 A2A 使用同一 Backend。
 pub mod a2a;
 mod a2a_client;
+pub(crate) mod fork;
 pub mod native;
 
 use std::{
@@ -38,11 +39,17 @@ pub struct LocalRun {
     pub cancel_requested: bool,
     pub native_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fork: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_directory: Option<std::path::PathBuf>,
     pub last_sequence: u64,
     #[serde(default)]
     pub finished_at: Option<u64>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub mentions: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

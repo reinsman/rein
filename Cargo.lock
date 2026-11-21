@@ -1403,6 +1403,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
+dependencies = [
+ "bitflags",
+ "memchr",
+ "unicase",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1537,9 +1548,11 @@ dependencies = [
  "axum",
  "clap",
  "prost",
+ "pulldown-cmark",
  "ra2a",
  "rein-proto",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

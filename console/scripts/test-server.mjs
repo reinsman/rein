@@ -23,7 +23,14 @@ for (const provider of ['pi', 'codex']) {
   )
 }
 const child = spawn(resolve(root, 'target/debug/reind'), {
-  env: { ...process.env, HOME: home, REIND_HOME: home, REIND_HTTP_ADDR: '127.0.0.1:18920' },
+  env: {
+    ...process.env,
+    HOME: home,
+    REIND_HOME: home,
+    REIND_HTTP_ADDR: '127.0.0.1:18920',
+    CODEX_HOME: `${home}/native`,
+    PI_CODING_AGENT_DIR: `${home}/native`,
+  },
   stdio: 'inherit',
 })
 let stopping = false

@@ -104,14 +104,18 @@ export function HandoffLinks({
               }}
             >
               <Icon name="handoff" size={14} />
-              <span>
-                {handoff.kind === 'review'
-                  ? 'Review'
-                  : handoff.kind === 'repair'
-                    ? '返修'
-                    : 'Coding'}{' '}
-                Handoff · {handoff.agent_id || '系统'}
-              </span>
+              {file ? (
+                <span>Handoff</span>
+              ) : (
+                <span>
+                  {handoff.kind === 'review'
+                    ? 'Review'
+                    : handoff.kind === 'repair'
+                      ? '返修'
+                      : 'Coding'}{' '}
+                  Handoff · {handoff.agent_id || '系统'}
+                </span>
+              )}
               {inline && (
                 <span className="hub-activity-chevron">
                   <Icon name="down" size={13} />

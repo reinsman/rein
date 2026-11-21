@@ -13,6 +13,8 @@ import type { Agent, AgentConfiguration } from '../types'
 import type { AgentPermissions, AgentSkills } from '../localTypes'
 import {
   agentConfigService,
+  codexPermissionDescriptions,
+  codexPermissionModes,
   permissionLabels,
   type TypeDefaults,
 } from '../services/agentConfigService'
@@ -310,20 +312,26 @@ export function AgentSettings({
                       <Alert severity="error">{defaults.error}</Alert>
                     )}
                     <Row
-                      label="访问级别"
+                      label="权限模式"
                       description={
                         value.provider === 'codex'
                           ? `类型默认值 · ${defaultPermissionsLabel}`
-                          : '继承 Pi 的默认权限，由启动账户和运行环境决定。'
+                          : 'Pi 按启动账户和运行环境的权限执行。'
                       }
                     >
                       {value.provider === 'pi' ? (
-                        <span className="agent-setting-value">原生完全访问</span>
+                        <span className="agent-setting-value">{permissionLabels.full_access}</span>
                       ) : (
                         select(
-                          '访问级别',
+                          '权限模式',
                           value.permissions ?? '',
-                          [['', '继承类型默认权限'], ...Object.entries(permissionLabels)],
+                          [
+                            ['', '继承类型默认权限'],
+                            ...(value.permissions === 'read_only'
+                              ? [['read_only', permissionLabels.read_only]]
+                              : []),
+                            ...Object.entries(codexPermissionModes),
+                          ],
                           (permissions) =>
                             update({
                               permissions: (permissions || null) as AgentPermissions | null,
@@ -336,11 +344,7 @@ export function AgentSettings({
                         severity={effectivePermissions === 'full_access' ? 'warning' : 'info'}
                         className="agent-config-error"
                       >
-                        {effectivePermissions === 'full_access'
-                          ? '完全访问关闭 Codex 沙箱和审批，Agent 可在启动账户的权限范围内操作。'
-                          : effectivePermissions === 'read_only'
-                            ? '使用 Codex 只读沙箱，超出权限的操作需要审批。'
-                            : '使用 Codex 项目写入沙箱，超出权限的操作需要审批。'}
+                        {codexPermissionDescriptions[effectivePermissions]}
                       </Alert>
                     )}
                   </>

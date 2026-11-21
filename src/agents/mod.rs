@@ -26,7 +26,9 @@ pub enum AgentType {
 pub enum Permissions {
     #[default]
     FullAccess,
-    WorkspaceWrite,
+    #[serde(rename = "workspace_write", alias = "ask_for_approval")]
+    AskForApproval,
+    ApproveForMe,
     ReadOnly,
 }
 impl AgentType {
@@ -167,19 +169,6 @@ impl AgentConfig {
         }
         match self.provider {
             AgentType::Codex => {
-                let permissions = self.permissions.unwrap_or_default();
-                options.approval_policy = Some(
-                    match permissions {
-                        Permissions::FullAccess => "never",
-                        _ => "on-request",
-                    }
-                    .into(),
-                );
-                match permissions {
-                    Permissions::FullAccess => options.sandbox = Some("danger-full-access".into()),
-                    Permissions::WorkspaceWrite => options.sandbox = Some("workspace-write".into()),
-                    Permissions::ReadOnly => options.sandbox = Some("read-only".into()),
-                }
                 if let Some(effort) = &self.reasoning_effort {
                     options.args.extend([
                         "-c".into(),

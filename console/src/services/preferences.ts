@@ -41,6 +41,11 @@ const storage = {
     }
   },
 }
+const nodeNoticesKey = 'rein.read-node-notices'
+function readNodeNotices(): Set<string> {
+  const value = storage.read(nodeNoticesKey)
+  return new Set(Array.isArray(value) ? value.filter((key) => typeof key === 'string') : [])
+}
 export const preferencesService = {
   navigation(): NavigationState | null {
     const saved = storage.read('rein.navigation') as Partial<NavigationState> | null
@@ -94,12 +99,15 @@ export const preferencesService = {
   setTaskTab(id: string, value: number) {
     storage.write(`rein.task-tab.${id}`, value)
   },
-  readNodeNotices(): Set<string> {
-    const value = storage.read('rein.read-node-notices')
-    return new Set(Array.isArray(value) ? value.filter((key) => typeof key === 'string') : [])
+  readNodeNotices,
+  clearMigratedMentionReads(keys: string[]) {
+    const saved = readNodeNotices()
+    const remaining = [...saved].filter((key) => !keys.includes(key))
+    if (remaining.length !== saved.size) storage.write(nodeNoticesKey, remaining)
   },
   saveNodeNotices(keys: ReadonlySet<string>) {
-    storage.write('rein.read-node-notices', [...keys])
+    const legacyMentions = [...readNodeNotices()].filter((key) => key.startsWith('mention:'))
+    storage.write(nodeNoticesKey, [...keys, ...legacyMentions])
   },
   load(): Preferences {
     const saved = storage.read('rein.preferences') as Partial<Preferences> | null

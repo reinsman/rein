@@ -1,4 +1,4 @@
-export type AgentPermissions = 'full_access' | 'workspace_write' | 'read_only'
+export type AgentPermissions = 'full_access' | 'workspace_write' | 'approve_for_me' | 'read_only'
 
 export interface AgentConfig {
   name: string

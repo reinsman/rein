@@ -82,6 +82,8 @@ impl Harness {
             .env("HOME", self.0.path())
             .env("REIND_HOME", self.0.path())
             .env("REIND_HTTP_ADDR", "127.0.0.1:0")
+            .env_remove("CODEX_HOME")
+            .env_remove("PI_CODING_AGENT_DIR")
             .env(
                 "A2ALINKER_TEST_TRACE",
                 self.0.path().join("agent-trace.jsonl"),
@@ -356,6 +358,107 @@ fn native_workspace_defaults_to_type_directory_and_projects_use_their_preferred_
 }
 
 #[test]
+fn native_chat_forks_resume_at_the_anchor_for_both_providers() {
+    let h = Harness::new();
+    h.ok(&["daemon", "start"]);
+    for provider in ["codex", "pi"] {
+        h.workflow_agent(provider, provider);
+        let first = h.start(provider, "source prompt", None);
+        h.wait(&first, &["completed"]);
+        let session = first["session_id"].as_str().unwrap();
+        let later = h.start(provider, "later main message", Some(session));
+        h.wait(&later, &["completed"]);
+        let source = first["run_id"].as_str().unwrap();
+        if provider == "codex" {
+            h.sql(&format!("UPDATE local_runs SET snapshot=json_remove(snapshot,'$.working_directory') WHERE id='{source}'"));
+        }
+        let submit = format!("/api/runs/{source}/fork");
+        let list = format!("/api/sessions/{session}/forks");
+        let context = h.api(
+            "GET",
+            &format!("/api/runs/{source}/fork-context"),
+            Value::Null,
+        );
+        assert_eq!(context["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(context["runs"][0]["run"]["run_id"], first["run_id"]);
+        assert_eq!(h.api("GET", &list, Value::Null), json!([]));
+        assert_eq!(
+            h.http(
+                "POST",
+                &submit,
+                json!({"prompt":" ","request_id":Uuid::new_v4()})
+            )
+            .0,
+            400
+        );
+        assert_eq!(h.api("GET", &list, Value::Null), json!([]));
+        let prompt = json!({"prompt":"first fork prompt","request_id":Uuid::new_v4()});
+        let created = h.api("POST", &submit, prompt.clone());
+        let id = created["fork"]["id"].as_str().unwrap();
+        let new_run = &created["run"];
+        assert_ne!(id, session);
+        assert_eq!(created["fork"]["title"], "first fork prompt");
+        let retry = h.api("POST", &submit, prompt);
+        assert_eq!(retry["fork"]["id"], id);
+        assert_eq!(retry["run"]["run_id"], new_run["run_id"]);
+        let completed = h.wait(new_run, &["completed"]);
+        assert!(
+            completed["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["event"]["complete"] == true
+                    && event["event"]["text"] == "Hello 2")
+        );
+        let latest = h.start(provider, "main keeps going", Some(session));
+        let completed = h.wait(&latest, &["completed"]);
+        assert!(
+            completed["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["event"]["complete"] == true
+                    && event["event"]["text"] == "Hello 3")
+        );
+        assert_eq!(new_run["working_directory"], first["working_directory"]);
+        h.ok(&["daemon", "restart"]);
+        let forks = h.api("GET", &list, Value::Null);
+        assert_eq!(forks[0]["title"], "first fork prompt");
+        assert_eq!(forks[0]["message_count"], 2);
+        let history = h.api(
+            "GET",
+            &format!("/api/agents/{provider}/history"),
+            Value::Null,
+        );
+        assert!(
+            history["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["id"] != id)
+        );
+        h.api("DELETE", &format!("/api/chat-forks/{id}"), Value::Null);
+        assert_eq!(
+            h.http(
+                "POST",
+                "/api/runs",
+                json!({"agent_id":provider,
+            "session_id":id,"prompt":"old ID","request_id":Uuid::new_v4()})
+            )
+            .0,
+            400
+        );
+        let recreated = h.api(
+            "POST",
+            &submit,
+            json!({"prompt":"new fork","request_id":Uuid::new_v4()}),
+        );
+        assert_ne!(recreated["fork"]["id"], id);
+        h.wait(&recreated["run"], &["completed"]);
+    }
+}
+
+#[test]
 fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() {
     use sha2::{Digest, Sha256};
 
@@ -375,12 +478,51 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
     )
     .unwrap();
     std::fs::write(original_dir.join("auth.json"), "{}").unwrap();
+    let native_codex = h.0.path().join(".codex");
+    std::fs::create_dir(&native_codex).unwrap();
+    std::fs::write(
+        native_codex.join("config.toml"),
+        "model = \"native-default\"\n",
+    )
+    .unwrap();
     h.ok(&["daemon", "start"]);
     h.add_native("codex", "fast");
     h.add_native("codex", "deep");
     h.add_native("codex", "unrestricted");
     h.add_native("pi", "helper");
-    let files = h.api("GET", "/api/agent-types/codex", Value::Null);
+    let default = h.api("GET", "/api/agent-types/codex", Value::Null);
+    assert_eq!(default["independent"], false);
+    assert_eq!(default["files"], json!([]));
+    assert_eq!(default["defaults"]["model"], "native-default");
+    assert!(!h.0.path().join("agents/codex/config.toml").exists());
+    let default_run = h.start("deep", "normal", None);
+    let default_record = h.wait(&default_run, &["completed"]);
+    let default_session = default_run["session_id"].as_str().unwrap();
+    let files = h.api(
+        "PUT",
+        "/api/agent-types/codex/config-mode",
+        json!({"independent":true}),
+    );
+    assert_eq!(files["independent"], true);
+    let continued = h.start("deep", "normal", Some(default_session));
+    let continued = h.wait(&continued, &["completed"]);
+    assert_eq!(
+        continued["run"]["native_session_id"],
+        default_record["run"]["native_session_id"]
+    );
+    let trace = std::fs::read_to_string(h.0.path().join("agent-trace.jsonl")).unwrap();
+    let starts: Vec<Value> = trace
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|entry: &Value| entry["startup"].is_object())
+        .collect();
+    assert_eq!(starts.len(), 2);
+    for entry in starts {
+        assert_eq!(
+            entry["startup"]["configHome"],
+            native_codex.to_str().unwrap()
+        );
+    }
     let imported = files["files"][0]["content"].as_str().unwrap();
     assert!(imported.contains("fixture-default"));
     assert!(!imported.contains("desktop"));
@@ -417,7 +559,15 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
         std::fs::read_to_string(original_dir.join("config.toml")).unwrap(),
         original
     );
-    let pi = h.api("GET", "/api/agent-types/pi", Value::Null);
+    assert_eq!(
+        h.api("GET", "/api/agent-types/pi", Value::Null)["independent"],
+        false
+    );
+    let pi = h.api(
+        "PUT",
+        "/api/agent-types/pi/config-mode",
+        json!({"independent":true}),
+    );
     assert_eq!(
         serde_json::from_str::<Value>(pi["files"][1]["content"].as_str().unwrap()).unwrap(),
         json!({"defaultModel":"pi-default","defaultProvider":"fixture","defaultThinkingLevel":"medium"})
@@ -455,7 +605,7 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
         h.http(
             "PUT",
             "/api/agent-types/pi/permissions",
-            json!({"permissions":"read_only"})
+            json!({"permissions":"approve_for_me"})
         )
         .0,
         400
@@ -463,14 +613,14 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
     h.api(
         "PUT",
         "/api/agent-types/codex/permissions",
-        json!({"permissions":"read_only"}),
+        json!({"permissions":"approve_for_me"}),
     );
     h.ok(&["daemon", "restart"]);
     assert_eq!(
         h.api("GET", "/api/agent-types/codex/defaults", Value::Null)["permissions"],
-        "read_only"
+        "approve_for_me"
     );
-    for (name, model, effort, permissions, sandbox, approval) in [
+    for (name, model, effort, permissions, sandbox, approval, reviewer) in [
         (
             "fast",
             "fixture-fast",
@@ -478,14 +628,16 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
             Some("workspace_write"),
             "workspace-write",
             "on-request",
+            "user",
         ),
         (
             "deep",
             "fixture-deep",
             "high",
             None,
-            "read-only",
+            "workspace-write",
             "on-request",
+            "auto_review",
         ),
         (
             "unrestricted",
@@ -494,8 +646,9 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
             Some("full_access"),
             "danger-full-access",
             "never",
+            "user",
         ),
-        ("helper", "pi-model", "medium", None, "", ""),
+        ("helper", "pi-model", "medium", None, "", "", ""),
     ] {
         let mut config: Value = serde_json::from_str(&h.ok(&["agent", "inspect", name])).unwrap();
         config["model"] = json!(model);
@@ -550,6 +703,7 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
             assert_eq!(params["model"], model);
             assert_eq!(params["sandbox"], sandbox);
             assert_eq!(params["approvalPolicy"], approval);
+            assert_eq!(params["approvalsReviewer"], reviewer);
         } else {
             assert!(
                 args.windows(2)
@@ -561,6 +715,31 @@ fn native_agents_import_and_share_type_config_with_per_agent_model_and_effort() 
             );
         }
     }
+    let disabled = h.api(
+        "PUT",
+        "/api/agent-types/codex/config-mode",
+        json!({"independent":false}),
+    );
+    assert_eq!(disabled["files"], json!([]));
+    assert_eq!(disabled["independent"], false);
+    assert_eq!(disabled["defaults"]["model"], default["defaults"]["model"]);
+    assert_eq!(disabled["defaults"]["permissions"], "approve_for_me");
+    assert_eq!(
+        h.http("PUT", endpoint, json!({"previous":changed,"content":""}))
+            .0,
+        400
+    );
+    let continued = h.start("deep", "normal", Some(prior_session));
+    assert_eq!(
+        h.wait(&continued, &["completed"])["run"]["native_session_id"],
+        prior_native_id
+    );
+    let restored = h.api(
+        "PUT",
+        "/api/agent-types/codex/config-mode",
+        json!({"independent":true}),
+    );
+    assert_eq!(restored["files"][0]["content"], changed);
     for changed in [
         json!({"name":"deep","provider":"pi"}),
         json!({"name":"deep","provider":"codex","a2a":{"url":"http://127.0.0.1:9/a2a"}}),
@@ -581,6 +760,11 @@ fn agents_default_to_rein_skills_and_can_opt_into_native_compatibility() {
     h.ok(&["daemon", "start"]);
     for provider in ["codex", "pi"] {
         h.add_native(provider, provider);
+        h.api(
+            "PUT",
+            &format!("/api/agent-types/{provider}/config-mode"),
+            json!({"independent":true}),
+        );
         let native =
             h.0.path()
                 .join(format!("agents/{provider}/skills/native-only"));
@@ -691,7 +875,7 @@ fn native_skill_install_requires_consent_preserves_files_and_reports_shared_skil
     h.add_native("codex", "coder");
     let pi = "/api/agents/helper/skills";
     let before = h.api("GET", pi, Value::Null);
-    let target = h.0.path().join("agents/pi/skills/rein-spec");
+    let target = h.0.path().join(".pi/agent/skills/rein-spec");
     assert_eq!(before["install_path"], target.to_str().unwrap());
     assert_eq!(before["rein_spec_installed"], false);
     let source = h.0.path().join("skills/rein-spec");
@@ -805,6 +989,11 @@ fn skill_install_refuses_existing_incomplete_or_symlinked_skill_directories() {
     let h = Harness::new();
     h.ok(&["daemon", "start"]);
     h.add_native("pi", "helper");
+    h.api(
+        "PUT",
+        "/api/agent-types/pi/config-mode",
+        json!({"independent":true}),
+    );
     let target = h.0.path().join("agents/pi/skills/rein-spec");
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("keep.txt"), "do not overwrite").unwrap();

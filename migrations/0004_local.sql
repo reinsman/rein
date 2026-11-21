@@ -30,3 +30,15 @@ CREATE TABLE IF NOT EXISTS local_commands (
     payload TEXT NOT NULL,
     ack TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_mention_reads (
+    message_key TEXT PRIMARY KEY NOT NULL
+);
+CREATE TABLE IF NOT EXISTS local_chat_forks (
+    id TEXT PRIMARY KEY NOT NULL,
+    source_session_id TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    working_directory TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS local_chat_forks_source
+    ON local_chat_forks(source_session_id, source_run_id) WHERE deleted=0;

@@ -26,21 +26,29 @@ pub struct TypeDefaults {
     pub permissions: Permissions,
 }
 
+#[derive(Serialize)]
+pub struct TypeConfiguration {
+    pub independent: bool,
+    pub files: Vec<TypeConfigFile>,
+    pub defaults: Option<TypeDefaults>,
+}
+
 impl AgentFiles {
-    pub fn type_defaults(
-        &self,
-        provider: AgentType,
-        files: &[TypeConfigFile],
-    ) -> Result<TypeDefaults> {
-        let name = match provider {
-            AgentType::Codex => "config.toml",
-            AgentType::Pi => "settings.json",
+    pub fn type_defaults(&self, provider: AgentType, independent: bool) -> Result<TypeDefaults> {
+        let directory = if independent {
+            self.type_directory(provider)
+        } else {
+            provider.source(None)?
         };
-        let text = &files
-            .iter()
-            .find(|file| file.name == name)
-            .context("managed defaults file is missing")?
-            .content;
+        let text = read_file(&directory.join(provider.defaults_file()), independent)?;
+        let Some(text) = text else {
+            return Ok(TypeDefaults {
+                model: None,
+                model_provider: None,
+                reasoning_effort: None,
+                permissions: self.default_permissions(provider)?,
+            });
+        };
         let (model, model_provider, reasoning_effort) = match provider {
             AgentType::Codex => {
                 let table: toml::Table = text.parse().context("invalid TOML configuration")?;
@@ -57,7 +65,7 @@ impl AgentFiles {
                 )
             }
             AgentType::Pi => {
-                let table = json_config(text)?;
+                let table = json_config(&text)?;
                 let get = |key| table.get(key).and_then(Value::as_str).map(str::to_owned);
                 (
                     get("defaultModel"),
@@ -91,7 +99,7 @@ impl AgentFiles {
         permissions: Permissions,
     ) -> Result<()> {
         provider.validate_permissions(permissions)?;
-        let directory = self.prepare_type(provider, None)?;
+        let directory = self.prepare_type_directory(provider)?;
         write_json(&directory.join("permissions.json"), &permissions)
     }
 }
@@ -108,6 +116,13 @@ impl AgentType {
         match self {
             Self::Codex => &["config.toml"],
             Self::Pi => &["models.json", "settings.json"],
+        }
+    }
+
+    fn defaults_file(self) -> &'static str {
+        match self {
+            Self::Codex => "config.toml",
+            Self::Pi => "settings.json",
         }
     }
 
@@ -150,7 +165,7 @@ impl AgentFiles {
         self.0.join(provider.name())
     }
 
-    pub fn prepare_type(&self, provider: AgentType, explicit: Option<&Path>) -> Result<PathBuf> {
+    pub fn prepare_type_directory(&self, provider: AgentType) -> Result<PathBuf> {
         let directory = self.type_directory(provider);
         fs::create_dir_all(&directory)?;
         ensure!(
@@ -158,6 +173,43 @@ impl AgentFiles {
             "agent type directory must not be a symlink"
         );
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        Ok(directory)
+    }
+
+    pub fn independent_config(&self, provider: AgentType) -> Result<bool> {
+        let directory = self.type_directory(provider);
+        read_file(&directory.join("independent-config.json"), true)?
+            .map(|setting| serde_json::from_str(&setting).context("读取独立配置开关"))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    pub fn initialize_type_config_mode(&self, provider: AgentType) -> Result<()> {
+        let directory = self.prepare_type_directory(provider)?;
+        let path = directory.join("independent-config.json");
+        if read_file(&path, true)?.is_none() {
+            // Existing managed files stay active on upgrade.
+            let independent = directory.join(provider.defaults_file()).try_exists()?;
+            write_json(&path, &independent)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_independent_config(
+        &self,
+        provider: AgentType,
+        independent: bool,
+        explicit: Option<&Path>,
+    ) -> Result<()> {
+        let directory = self.prepare_type_directory(provider)?;
+        if independent {
+            self.prepare_type(provider, explicit)?;
+        }
+        write_json(&directory.join("independent-config.json"), &independent)
+    }
+
+    pub fn prepare_type(&self, provider: AgentType, explicit: Option<&Path>) -> Result<PathBuf> {
+        let directory = self.prepare_type_directory(provider)?;
         for name in provider.files() {
             let path = directory.join(name);
             if read_file(&path, true)?.is_some() {
@@ -187,6 +239,19 @@ impl AgentFiles {
                 })
             })
             .collect()
+    }
+
+    pub fn type_configuration(&self, provider: AgentType) -> Result<TypeConfiguration> {
+        let independent = self.independent_config(provider)?;
+        Ok(TypeConfiguration {
+            independent,
+            files: if independent {
+                self.type_files(provider)?
+            } else {
+                vec![]
+            },
+            defaults: self.type_defaults(provider, independent).ok(),
+        })
     }
 
     pub fn save_type_file(

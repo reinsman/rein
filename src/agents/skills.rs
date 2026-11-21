@@ -302,9 +302,11 @@ pub fn status(config: &AgentConfig, directory: &Path) -> SkillStatus {
     let result = (|| -> Result<()> {
         let mut config = config.clone();
         if config.a2a.is_none() {
-            let type_directory =
-                super::AgentFiles(directory.join("agents")).type_directory(config.provider);
-            config.native_config = Some(type_directory.clone());
+            let agents = super::AgentFiles(directory.join("agents"));
+            let type_directory = agents.type_directory(config.provider);
+            config.native_config = agents
+                .independent_config(config.provider)?
+                .then(|| type_directory.clone());
             config.directory.get_or_insert(type_directory);
         }
         let roots = roots(&config)?;
